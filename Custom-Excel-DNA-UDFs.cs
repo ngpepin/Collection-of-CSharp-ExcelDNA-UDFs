@@ -1,87 +1,103 @@
 /*
- * ExcelDNA User-Defined Functions (Version 2.5.0)
- * 
+ *
+ * ExcelDNA User-Defined Functions 
+ *
  * This collection provides powerful worksheet functions that extend Excel's native capabilities. All functions are thread-safe and designed for high performance 
  * in large spreadsheets. Stateful functions (like INJECTVALUE) maintain state between calculations and as such violate Excel's "no side effects" rule 
  * (intentionally of course, because by doing so they allow state machines to be created in spreadsheet models!)
  *
- * RECALCALL, GETITERATIONSTATUS, SETITERATION, ISVISIBLE, DESCRIBE, INJECTVALUE, FINDPOS, PUTOBJECT, GETOBJECT, PURGEOBJECTS, 
- * TRUESPLIT, ISMEMBEROF, GETTHREADS, SETTHREADS, HASHARRAY
+ * VERCELDNA, SETTARGETVERSION, GETTARGETVERSION, RECALCALL, GETITERATIONSTATUS, SETITERATION, ISVISIBLE, DESCRIBE, INJECTVALUE, FINDPOS, 
+ * PUTOBJECT, GETOBJECT, PURGEOBJECTS,TRUESPLIT, ISMEMBEROF, GETTHREADS, SETTHREADS, HASHARRAY
  * 
  * Summary of Functions:
  *
- * 1. RECALCALL()
+ * 1. VEXCELDNA()
+ *    - Returns the current version of the UDF collection
+ *    - Usage: =vExcelDNA()
+ *    - Returns: String with the version number
+ *
+ * 2. SETTARGETVERSION(version)
+ *    - Sets the target version for backward compatibility
+ *    - Usage: =SetTargetVersion("2.0.0")
+ *    - Returns: Confirmation string with the previous and current target version
+ *
+ * 3. GETTARGETVERSION()
+ *    - Gets the current target version for backward compatibility
+ *    - Usage: =GetTargetVersion()
+ *    - Returns: String with the current target version
+ *
+ * 4. RECALCALL()
  *    - Triggers a full recalculation of the workbook
  *    - Usage: =RECALCALL()
  *    - Returns: "TRUE" on success
  *
- * 2. GETITERATIONSTATUS()
+ * 5. GETITERATIONSTATUS()
  *    - Returns Excel's iterative calculation settings
  *    - Usage: =GETITERATIONSTATUS()
  *    - Returns: String with status (ON/OFF), max iterations, and max change
  *
- * 3. SETITERATION(IterationOn, [maxIterations], [maxChange])
+ * 6. SETITERATION(IterationOn, [maxIterations], [maxChange])
  *    - Configures Excel's iterative calculation settings
  *    - Usage: =SETITERATION(TRUE, 100, 0.001)
  *    - Returns: Confirmation string with current settings
  *
- * 4. ISVISIBLE([cachingTime])
+ * 7. ISVISIBLE([cachingTime])
  *    - Checks if a cell is visible (not hidden by rows/columns)
  *    - Usage: =ISVISIBLE(10)  (10 second cache duration)
  *    - Returns: "TRUE" if visible, "FALSE" if hidden
  *
- * 5. DESCRIBE(cell_reference)
+ * 8. DESCRIBE(cell_reference)
  *    - Returns a description of the cell's content type
  *    - Usage: =DESCRIBE(A1)
  *    - Returns: String describing the value type
  *
- * 6. INJECTVALUE(cell_reference, value)
+ * 9. INJECTVALUE(cell_reference, value)
  *    - Injects a value into a cell (stateful operation)
  *    - Usage: =INJECTVALUE(B2, "Test Value")
  *    - Returns: The injected value
  *
- * 7. FINDPOS(text, substring, instance)
+ * 10.FINDPOS(text, substring, instance)
  *    - Finds positions of substrings (case-insensitive)
  *    - Usage: =FINDPOS("Hello World", "o", 1)
  *    - Returns: Position number or error if not found
  *
- * 8. PUTOBJECT(name, value, [force], [debug])
+ * 11.PUTOBJECT(name, value, [force], [debug])
  *    - Stores an object in temporary storage
  *    - Usage: =PUTOBJECT("temp1", A1:A10, TRUE)
  *    - Returns: The stored object
  *
- * 9. GETOBJECT(name, [debug])
+ * 12.GETOBJECT(name, [debug])
  *    - Retrieves an object from temporary storage
  *    - Usage: =GETOBJECT("temp1")
  *    - Returns: The stored object or error
  *
- * 10. PURGEOBJECTS()
+ * 13. PURGEOBJECTS()
  *     - Clears all objects from temporary storage
  *     - Usage: =PURGEOBJECTS()
  *     - Returns: "TRUE" on success
  *
- * 11. TRUESPLIT(input_array, delimiter)
+ * 14. TRUESPLIT(input_array, delimiter)
  *     - Splits strings into dynamic arrays
  *     - Usage: =TRUESPLIT(A1:A3, ",")
  *     - Returns: 2D array of split components
  *
- * 12. ISMEMBEROF(array1, array2)
+ * 15. ISMEMBEROF(array1, array2)
  *     - Checks for common elements between arrays
  *     - Usage: =ISMEMBEROF(A1:A10, B1:B20)
  *     - Returns: TRUE if any match found
  *
- * 13. GETTHREADS()
+ * 16. GETTHREADS()
  *     - Returns Excel's current thread count for calculations
  *     - Usage: =GETTHREADS()
  *     - Returns: Integer thread count
  *
- * 14. SETTHREADS(threadCount)
+ * 17. SETTHREADS(threadCount)
  *     - Configures Excel's calculation thread count
  *     - Usage: =SETTHREADS(4)  (Use 4 threads)
  *              =SETTHREADS(0)  (Use all processors)
  *     - Returns: Actual thread count set
  *
- * 15. HASHARRAY(input_array, [hashLength])
+ * 18. HASHARRAY(input_array, [hashLength])
  *     - Computes a consistent hash value for an array of values
  *     - Usage: =HASHARRAY(A1:A10, 8)
  *     - Returns: Hash string (default length 8, range 4-32)
@@ -102,16 +118,60 @@ using Excel = Microsoft.Office.Interop.Excel;
 
 public class C
 {
+    // Version components
+    private const string VERSION_MAJOR = "3";
+    private const string VERSION_MINOR = "0";
+    private const string VERSION_PATCH = "0";
+
+    // Current version string
+    private const string CurrentVersion =
+        VERSION_MAJOR + "." + VERSION_MINOR + "." + VERSION_PATCH;
+
+    private static string _targetVersion = CurrentVersion;
+
+    public static string Version
+    {
+        get { return CurrentVersion; }
+    }
+
+    public static string TargetVersion
+    {
+        get { return _targetVersion; }
+        set
+        {
+            // Validate version format (simple check for x.y.z pattern)
+            if (System.Text.RegularExpressions.Regex.IsMatch(value, @"^\d+\.\d+\.\d+$"))
+            {
+                _targetVersion = value;
+            }
+        }
+    }
+    // Usage Examples in Other UDFs:
+    //
+    // [ExcelFunction(Description = "Example UDF with version-aware behavior")]
+    // public static object VersionAwareFunction()
+    // {
+    //     // Compare versions using standard string comparison
+    //     if (string.Compare(TargetVersion, "2.0.0") < 0)
+    //     {
+    //         // Legacy behavior for pre-2.0 versions
+    //         return LegacyImplementation();
+    //     }
+    //     else
+    //     {
+    //         // Current behavior
+    //         return CurrentImplementation();
+    //     }
+    // }
+
     private static Dictionary<string, object> objectStore = new Dictionary<string, object>();
     private static Dictionary<string, object> injectedCells = new Dictionary<string, object>();
     private static Dictionary<string, Tuple<object, object>> invocationCache =
         new Dictionary<string, Tuple<object, object>>();
     private static Dictionary<string, Tuple<object, object>> visibilityCache =
         new Dictionary<string, Tuple<object, object>>();
-
     private static Excel.Application _excelApp;
     private static Excel.Application _app;
-
     const int defCachingTime = 10; // seconds
 
     // This is a helper method to manage caching time for the IsVisible UDF.
@@ -159,11 +219,59 @@ public class C
         }
     }
 
-    // ------------------------------------------------------------------------------------
     //
     // UDFS START HERE
     //
+    // vExcelDNA UDF
+    // ------------------------------------------------------------------------------------
+    //
+    // Returns the current version of the UDF collection
+    [ExcelFunction(
+        Name = "vExcelDNA",
+        Description = "Returns the version of the Excel-DNA UDF collection",
+        Category = "ExcelDNA Utilities",
+        IsVolatile = false
+    )]
+    public static string GetExcelDnaVersion()
+    {
+        return CurrentVersion;
+    }
 
+    //
+    // SetTargetVersion UDF
+    // ------------------------------------------------------------------------------------
+    //
+    // Sets the compatibility target version for backward compatibility
+    [ExcelFunction(
+        Name = "SetTargetVersion",
+        Description = "Sets the target version for backward compatibility",
+        Category = "ExcelDNA Utilities",
+        IsMacroType = true
+    )]
+    public static string SetTargetVersion(
+        [ExcelArgument(Description = "Target version in x.y.z format")] string version
+    )
+    {
+        string previousVersion = TargetVersion;
+        TargetVersion = version;
+        return "Target version changed from " + previousVersion + " to " + TargetVersion;
+    }
+
+    //
+    // GetTargetVersion UDF
+    // ------------------------------------------------------------------------------------
+    //
+    // Gets the current compatibility target version
+    [ExcelFunction(
+        Name = "GetTargetVersion",
+        Description = "Gets the current target version for backward compatibility",
+        Category = "ExcelDNA Utilities",
+        IsVolatile = false
+    )]
+    public static string GetTargetVersion()
+    {
+        return TargetVersion;
+    }
 
     // RecalcAll UDF
     // ------------------------------------------------------------------------------------
@@ -977,7 +1085,7 @@ public class C
      Description = "Gets Excel's current multithreading calculation thread count",
      Category = "ExcelDNA Utilities",
      IsVolatile = true
- )]
+    )]
     public static object GetThreads()
     {
         try
