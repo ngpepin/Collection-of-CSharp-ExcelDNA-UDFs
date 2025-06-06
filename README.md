@@ -379,7 +379,7 @@ ExcelDNA (for .NET) and Python integration in Excel serve different purposes and
 
 You do **not** need the eSharper add-in to use these Excel-DNA functions. They can be deployed as standard Excel add-ins using the following steps:
 
-### 🧰 Requirements
+###  Requirements
 
 * [Excel-DNA](https://excel-dna.net/)
 
@@ -390,7 +390,7 @@ You do **not** need the eSharper add-in to use these Excel-DNA functions. They c
 * Excel (2010 or newer recommended)
 
 
-### 🛠️ Steps to Compile and Use the UDFs
+###  Steps to Compile and Use the UDFs
 
 #### 1. **Create or Use a `.dna` File**
 
@@ -463,7 +463,7 @@ This will create `MyAddIn-packed.xll`.
 
 - - -
 
-### 🧩 Notes
+###  Notes
 
 * Excel-DNA add-ins are fully portable and do not require administrator installation.
 
