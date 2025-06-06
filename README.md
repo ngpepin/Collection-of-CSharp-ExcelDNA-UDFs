@@ -3,8 +3,8 @@
 This repository provides a collection of high-performance, thread-safe User Defined Functions (UDFs) for Microsoft Excel, developed using [Excel-DNA](https://excel-dna.net/). These functions are designed to enhance Excel's capabilities, offering advanced features for power users and developers.
 
 Author: Nicolas Pepin
-Date: 2025-03-01
-Version: 2.5.0
+Date: 2025-06
+Version: 3.1.1
 Licensing: MIT
 
 ## Table of Contents
