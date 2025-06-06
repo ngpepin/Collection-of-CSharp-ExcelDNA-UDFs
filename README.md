@@ -160,37 +160,222 @@ MIT License. See `LICENSE` file.
 
 ## Appendix A: Excel-DNA Technical Overview
 
-**What is Excel-DNA?**
 
-Excel-DNA (Excel .NET Assembly) is an open-source library that allows you to create high-performance Excel add-ins using .NET languages such as C# and VB.NET. Developed by Govert van Drimmelen, it provides a bridge between Excel and the .NET CLR.
+#### **What is Excel-DNA?**
 
-**Key Features:**
-- Write UDFs, macros, and custom Ribbon interfaces.
-- Embed all logic in a single `.xll` file.
-- Support for both .NET Framework and .NET 6/8.
-- Open-source and actively maintained.
+ExcelDNA is a powerful library that allows developers to create high-performance Excel add-ins using .NET languages (like C# or VB.NET). Here's a technical breakdown of how it works:
 
-**Performance:**
-- Much faster than VBA for computation-heavy tasks.
-- Comparable to VSTO for managed code scenarios but easier to deploy.
-- Native integration with Excel using C API, which reduces interop overhead compared to VSTO.
+##### **1. Core Architecture**
 
-**How it Works:**
-- Uses unmanaged C++ loader to bootstrap a CLR host.
-- UDFs and UI elements are declared using attributes and registered via reflection.
-- Allows embedded .NET assemblies directly in `.xll`.
+ExcelDNA bridges Excel's native C API (the **Excel XLL SDK**) with the .NET runtime. It does this by:
 
-**Constraints:**
-- No GUI threading — avoid UI operations from background threads.
-- Some Excel COM interfaces behave differently between .NET Framework and .NET Core.
-- No automatic garbage collection for Excel objects — be cautious with memory usage.
+* **Compiling .NET code into an XLL**: An XLL is a DLL specifically designed for Excel. ExcelDNA generates a thin native XLL stub that loads the .NET runtime and hosts your managed code.
 
-**Best Practices:**
-- Use `ExcelAsyncUtil.QueueAsMacro` for thread-safe UI interaction.
-- Mark volatile functions only when needed.
-- Cache results to avoid excessive recalculations.
+* **Using Managed/Unmanaged Interop**: The XLL acts as a bridge between Excel (unmanaged C/C++ world) and .NET (managed world) using P/Invoke and COM Interop.
 
-## Using Without eSharper
+##### **2. Key Components**
+
+* **ExcelDna.Integration.dll**: Provides the core API for registering functions, handling callbacks, and marshaling data between Excel and .NET.
+
+* **ExcelDna.Loader.dll**: Manages the dynamic loading of .NET assemblies into Excel.
+
+* **ExcelDnaPack**: A tool that bundles custom .NET assemblies and dependencies into a single `.xll` file for deployment.
+
+##### **3. Function Registration**
+
+When Excel loads the XLL:
+
+* **ExcelDNA scans your .NET assembly** for methods marked with Excel-specific attributes (e.g., `[ExcelFunction]`).
+
+* **It generates Excel-compatible exports** (via `xlAutoOpen` and `xlAddInManagerInfo` callbacks).
+
+* **Wraps .NET methods** in native XLL-compatible functions, handling type conversion between:
+
+  * Excel `XLOPER`/`XLOPER12` types ↔ .NET types (double, string, object\[,], etc.).
+
+  * Excel arrays ↔ .NET `object[,]` or `double[,]`.
+
+##### **4. Marshaling & Memory Management**
+
+* **Arguments passed from Excel** are converted into .NET types.
+
+* **Return values** from .NET are packed back into Excel-compatible structures.
+
+* **ExcelDNA manages memory** to prevent leaks (e.g., freeing temporary `XLOPER`s).
+
+##### **5. Asynchronous & Multithreading Support**
+
+* Excel is single-threaded (STA), but ExcelDNA allows **async functions** via `[ExcelAsync]`.
+
+* Uses **.NET Tasks** to run computations in the background and return results later.
+
+##### **6. RTD (Real-Time Data) Support**
+
+* Implements Excel's **RTD server** interface for push-based real-time updates.
+
+* Managed .NET code can push data to Excel cells in real time.
+
+##### **7. COM & Ribbon Integration**
+
+* If needed, ExcelDNA can expose .NET classes to Excel via COM (for UDFs or macros).
+
+* Supports customizing the Ribbon UI via **Fluent UI XML**.
+
+##### **8. Debugging & Deployment**
+
+* Works with **Visual Studio debugging** (attach to Excel process).
+
+* Packaged as a single `.xll` file (no separate installer needed).
+
+##### **9. Performance Considerations**
+
+* Minimal overhead (\~native speed) due to direct XLL integration.
+
+* Avoids COM where possible for better performance.
+
+##### **10. Comparison to Other Tech (VSTO, COM Add-ins)**
+
+* **Faster** than VSTO (no COM overhead).
+
+* **Lighter** than VSTO (no need for a separate runtime).
+
+* **More flexible** than VBA (full .NET ecosystem access).
+
+##### **Example Flow (Calling a .NET Function from Excel)**
+
+1. User enters `=MyNetFunction(A1)` in Excel.
+
+2. Excel calls the XLL’s exported stub.
+
+3. ExcelDNA marshals arguments to .NET.
+
+4. Your `[ExcelFunction]` method runs in .NET.
+
+5. Return value is marshaled back to Excel.
+
+ExcelDNA essentially makes .NET a first-class citizen in Excel while maintaining high performance and compatibility.
+
+#### **How does it compare with Python-based approaches?**
+
+ExcelDNA (for .NET) and Python integration in Excel serve different purposes and have distinct technical approaches. Here’s a detailed comparison:
+
+##### **1. Technical Implementation**
+
+| **Aspect**            | **ExcelDNA (.NET)**                       | **Python in Excel**                                                                 |
+| --------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| **Integration Level** | Deep XLL integration (native Excel C API) | Officially supported by Microsoft (via PyXLL, xlwings, or built-in Python in Excel) |
+| **Performance**       | Near-native (minimal overhead)            | Slower (Python interpreter + marshaling)                                            |
+| **Language**          | C#, F#, VB.NET                            | Python                                                                              |
+| **Deployment**        | Single `.xll` file                        | Requires Python runtime, dependencies                                               |
+| **Concurrency**       | Supports async via `[ExcelAsync]`         | Limited (Python's GIL can bottleneck multithreading)                                |
+| **Real-Time Data**    | RTD support (push updates)                | Possible with PyXLL/xlwings, but slower                                             |
+| **Debugging**         | Easy (attach to Excel process)            | Requires IDE setup (e.g., VS Code, PyCharm)                                         |
+
+##### **2. Functionality & Use Cases**
+
+| **Feature**                       | **ExcelDNA**                | **Python in Excel**                  |
+| --------------------------------- | --------------------------- | ------------------------------------ |
+| **User-Defined Functions (UDFs)** | Yes (high performance)      | Yes (slower, but flexible)           |
+| **Macros & Automation**           | Yes (via `[ExcelMacro]`)    | Yes (xlwings, COM)                   |
+| **Data Processing**               | Fast (direct .NET arrays)   | Slower (Pandas/NumPy marshaling)     |
+| **Machine Learning**              | ML.NET, TensorFlow\.NET     | Full scikit-learn/TensorFlow/PyTorch |
+| **Excel UI Control**              | Custom Ribbon, WinForms/WPF | Limited (depends on tool)            |
+| **Cross-Platform**                | Windows-only                | Works on Mac (xlwings)               |
+
+##### **3. Pros and Cons**
+
+###### **ExcelDNA (.NET)**
+
+ **Pros:**
+
+* Blazing fast (native XLL performance).
+
+* Direct access to Excel’s C API (low-level control).
+
+* Strong typing (C#/F# reduces runtime errors).
+
+* Easy deployment (single `.xll` file).
+
+* Full .NET ecosystem (e.g., parallel computing, databases).
+
+ **Cons:**
+
+* Windows-only (no macOS support).
+
+* Requires .NET knowledge.
+
+* Only works with desktop version of Excel.
+
+* Less popular for data science than Python.
+
+###### **Python in Excel**
+
+ **Pros:**
+
+* **Built-in Python in Excel (Microsoft 365)**: No add-ins needed.
+
+* **Huge ecosystem** (Pandas, NumPy, scikit-learn, etc.).
+
+* **Better for prototyping** (Jupyter-like workflows).
+
+* **Cross-platform** (xlwings works on Mac).
+
+ **Cons:**
+
+* **Slower** (Python interpreter + data marshaling).
+
+* **Dependency hell** (conda/pip environments).
+
+* **Limited real-time performance** (no RTD in pure Python).
+
+* **Debugging is harder** (external IDE needed).
+
+- - -
+
+##### **4. When to Use Which?**
+
+* **Use ExcelDNA if:**
+
+  * You need **maximum performance** (financial models, real-time data).
+
+  * You’re already using **.NET/C#**.
+
+  * You need **deep Excel integration** (custom UI, RTD, async).
+
+* **Use Python in Excel if:**
+
+  * You’re doing **data science/ML** (Pandas, scikit-learn).
+
+  * You prefer **quick prototyping** (Jupyter-style).
+
+  * You need **cross-platform** support (Mac + Windows).
+
+
+##### **5. Emerging Trends**
+
+* **Microsoft’s built-in Python in Excel** (2023+):
+
+  * Runs **Python in the cloud** (not locally).
+
+  * Seamless grid integration (no add-ins).
+
+  * Still early (limited libraries, no local execution).
+
+* **Alternatives**:
+
+  * **PyXLL**: Commercial, high-performance Python XLL.
+
+  * **xlwings**: Free, but COM-based (slower).
+
+##### **Final Verdict**
+
+* **ExcelDNA** = **Speed + Control** (best for .NET devs).
+
+* **Python in Excel** = **Flexibility + Ecosystem** (best for data scientists).
+
+- - -
+
+## Appendix B: Using Without eSharper
 
 You do **not** need the eSharper add-in to use these Excel-DNA functions. They can be deployed as standard Excel add-ins using the following steps:
 
@@ -204,7 +389,6 @@ You do **not** need the eSharper add-in to use these Excel-DNA functions. They c
 
 * Excel (2010 or newer recommended)
 
-- - -
 
 ### 🛠️ Steps to Compile and Use the UDFs
 
@@ -212,9 +396,7 @@ You do **not** need the eSharper add-in to use these Excel-DNA functions. They c
 
 Create a file named `MyAddIn.dna` with the following content:
 
-```
-xml
-CopyEdit
+``` xml
 <DnaLibrary Name="MyExcelFunctions" RuntimeVersion="v4.0">
   <ExternalLibrary Path="MyFunctions.dll" />
 </DnaLibrary>
@@ -232,9 +414,8 @@ Compile your C# file into a class library (`.dll`). You can do this using:
 
 * Or with the command line:
 
-```
-bash
-CopyEdit
+``` bash
+
 csc /target:library /out:MyFunctions.dll Custom-Excel-DNA-UDFs.cs
 ```
 
@@ -252,9 +433,8 @@ Download the latest [Excel-DNA binaries](https://github.com/Excel-DNA/ExcelDna/r
 
 To link everything together, you should have:
 
-```
-bash
-CopyEdit
+``` bash
+
 MyAddIn.dna
 MyFunctions.dll
 MyAddIn.xll (copied/renamed from ExcelDna.xll)
@@ -262,9 +442,8 @@ MyAddIn.xll (copied/renamed from ExcelDna.xll)
 
 **Optional**: Use the Excel-DNA `Pack` utility to bundle the `.xll`, `.dll`, and `.dna` into a single file:
 
-```
-bash
-CopyEdit
+``` bash
+
 ExcelDnaPack.exe MyAddIn.dna
 ```
 
