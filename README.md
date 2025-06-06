@@ -29,95 +29,103 @@ The UDFs in this collection are implemented in C# and can be integrated into Exc
 
 ## Summary of Functions
 
-1. **RECALCALL()**  
+
+1. **VEXCELDNA()**  
+   - Returns the current version of the UDF collection  
+   - **Usage**: `=VEXCELDNA()`  
+   - **Returns**: String with the version number  
+
+2. **SETTARGETVERSION(version)**  
+   - Sets the target version for backward compatibility  
+   - **Usage**: `=SETTARGETVERSION("2.0.0")`  
+   - **Returns**: Confirmation string with the previous and current target version  
+
+3. **GETTARGETVERSION()**  
+   - Gets the current target version for backward compatibility  
+   - **Usage**: `=GETTARGETVERSION()`  
+   - **Returns**: String with the current target version  
+
+4. **RECALCALL()**  
    - Triggers a full recalculation of the workbook  
    - **Usage**: `=RECALCALL()`  
-   - **Returns**: `"TRUE"` on success
+   - **Returns**: `"TRUE"` on success  
 
-
-2. **GETITERATIONSTATUS()**  
+5. **GETITERATIONSTATUS()**  
    - Returns Excel's iterative calculation settings  
    - **Usage**: `=GETITERATIONSTATUS()`  
    - **Returns**: String with status (ON/OFF), max iterations, and max change  
 
-
-3. **SETITERATION(IterationOn, [maxIterations], [maxChange])**  
+6. **SETITERATION(IterationOn, [maxIterations], [maxChange])**  
    - Configures Excel's iterative calculation settings  
    - **Usage**: `=SETITERATION(TRUE, 100, 0.001)`  
    - **Returns**: Confirmation string with current settings  
 
-
-4. **ISVISIBLE([cachingTime])**  
+7. **ISVISIBLE([cachingTime])**  
    - Checks if a cell is visible (not hidden by rows/columns)  
    - **Usage**: `=ISVISIBLE(10)` (10 second cache duration)  
    - **Returns**: `"TRUE"` if visible, `"FALSE"` if hidden  
 
-
-5. **DESCRIBE(cell_reference)**  
+8. **DESCRIBE(cell_reference)**  
    - Returns a description of the cell's content type  
    - **Usage**: `=DESCRIBE(A1)`  
    - **Returns**: String describing the value type  
 
-
-6. **INJECTVALUE(cell_reference, value)**  
+9. **INJECTVALUE(cell_reference, value)**  
    - Injects a value into a cell (stateful operation)  
    - **Usage**: `=INJECTVALUE(B2, "Test Value")`  
    - **Returns**: The injected value  
 
+10. **FINDPOS(text, substring, instance)**  
+    - Finds positions of substrings (case-insensitive)  
+    - **Usage**: `=FINDPOS("Hello World", "o", 1)`  
+    - **Returns**: Position number or error if not found  
 
-7. **FINDPOS(text, substring, instance)**  
-   - Finds positions of substrings (case-insensitive)  
-   - **Usage**: `=FINDPOS("Hello World", "o", 1)`  
-   - **Returns**: Position number or error if not found  
+11. **PUTOBJECT(name, value, [force], [debug])**  
+    - Stores an object in temporary storage  
+    - **Usage**: `=PUTOBJECT("temp1", A1:A10, TRUE)`  
+    - **Returns**: The stored object  
 
+12. **GETOBJECT(name, [debug])**  
+    - Retrieves an object from temporary storage  
+    - **Usage**: `=GETOBJECT("temp1")`  
+    - **Returns**: The stored object or error  
 
-8. **PUTOBJECT(name, value, [force], [debug])**  
-   - Stores an object in temporary storage  
-   - **Usage**: `=PUTOBJECT("temp1", A1:A10, TRUE)`  
-   - **Returns**: The stored object  
-
-
-9. **GETOBJECT(name, [debug])**  
-   - Retrieves an object from temporary storage  
-   - **Usage**: `=GETOBJECT("temp1")`  
-   - **Returns**: The stored object or error  
-
-
-10. **PURGEOBJECTS()**  
+13. **PURGEOBJECTS()**  
     - Clears all objects from temporary storage  
     - **Usage**: `=PURGEOBJECTS()`  
     - **Returns**: `"TRUE"` on success  
 
-
-11. **TRUESPLIT(input_array, delimiter)**  
+14. **TRUESPLIT(input_array, delimiter)**  
     - Splits strings into dynamic arrays  
     - **Usage**: `=TRUESPLIT(A1:A3, ",")`  
     - **Returns**: 2D array of split components  
 
-
-12. **ISMEMBEROF(array1, array2)**  
+15. **ISMEMBEROF(array1, array2)**  
     - Checks for common elements between arrays  
     - **Usage**: `=ISMEMBEROF(A1:A10, B1:B20)`  
     - **Returns**: `TRUE` if any match found  
 
-
-13. **GETTHREADS()**  
+16. **GETTHREADS()**  
     - Returns Excel's current thread count for calculations  
     - **Usage**: `=GETTHREADS()`  
     - **Returns**: Integer thread count  
 
-
-14. **SETTHREADS(threadCount)**  
+17. **SETTHREADS(threadCount)**  
     - Configures Excel's calculation thread count  
-    - **Usage**: `=SETTHREADS(4)` (Use 4 threads)  
-               `=SETTHREADS(0)` (Use all processors)  
+    - **Usage**:  
+      `=SETTHREADS(4)` (Use 4 threads)  
+      `=SETTHREADS(0)` (Use all processors)  
     - **Returns**: Actual thread count set  
 
-
-15. **HASHARRAY(input_array, [hashLength])**  
+18. **HASHARRAY(input_array, [hashLength])**  
     - Computes a consistent hash value for an array of values  
     - **Usage**: `=HASHARRAY(A1:A10, 8)`  
     - **Returns**: Hash string (default length 8, range 4–32)  
+
+19. **ISLOCALIP(ipAddress_string)**  
+    - Checks if an IP address is a local IP (private or loopback)  
+    - **Usage**: `=ISLOCALIP(ipAddress_string)`  
+    - **Returns**: `TRUE` if local IP, `FALSE` otherwise or `#N/A` if invalid input  
 
 ## Integration with eSharper
 
