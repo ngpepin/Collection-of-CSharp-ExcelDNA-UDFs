@@ -7,7 +7,7 @@
  * (intentionally of course, because by doing so they allow state machines to be created in spreadsheet models!)
  *
  * VERCELDNA, SETTARGETVERSION, GETTARGETVERSION, RECALCALL, GETITERATIONSTATUS, SETITERATION, ISVISIBLE, DESCRIBE, INJECTVALUE, FINDPOS, 
- * PUTOBJECT, GETOBJECT, PURGEOBJECTS,TRUESPLIT, ISMEMBEROF, GETTHREADS, SETTHREADS, HASHARRAY
+ * PUTOBJECT, GETOBJECT, PURGEOBJECTS,TRUESPLIT, ISMEMBEROF, GETTHREADS, SETTHREADS, HASHARRAY, ISLOCALIP
  * 
  * Summary of Functions:
  *
@@ -102,6 +102,11 @@
  *     - Usage: =HASHARRAY(A1:A10, 8)
  *     - Returns: Hash string (default length 8, range 4-32)
  *
+ * 19. ISLOCALIP(ipAddress_string)
+ *    - Checks if an IP address is a local IP (private or loopback)
+ *    - Usage: =ISLOCALIP(ipAddress_string)
+ *    - Returns: TRUE if local IP, FALSE otherwise or #N/A if invalid input
+ *
  * Notes:
  * - Functions marked as volatile recalculate when any cell changes
  * - Stateful functions (like INJECTVALUE) maintain state between calculations
@@ -120,8 +125,8 @@ public class C
 {
     // Version components
     private const string VERSION_MAJOR = "3";
-    private const string VERSION_MINOR = "0";
-    private const string VERSION_PATCH = "0";
+    private const string VERSION_MINOR = "1";
+    private const string VERSION_PATCH = "1";
 
     // Current version string
     private const string CurrentVersion =
@@ -1362,6 +1367,81 @@ public class C
 
             // Take the requested length (minimum 4, maximum 32)
             return base64Hash.Substring(0, Math.Min(Math.Max(length, 4), 32));
+        }
+    }
+
+    // isLocalIP UDF
+    // ------------------------------------------------------------------------------------
+    //
+    // This function checks if an IP address is local/private or routable.
+    // It takes an IP address (optionally with port) as input and returns TRUE if local/private,
+    // FALSE if routable, and #N/A if the input is invalid.
+    [ExcelFunction(Description = "Returns TRUE if an IP address is local/private, FALSE if routable, #N/A if invalid.")]
+    public static object isLocalIP([ExcelArgument(Description = "IP address (optionally with port)")] string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return ExcelError.ExcelErrorNA;
+
+        try
+        {
+            // Remove port if present
+            int colonIndex = input.LastIndexOf(':');
+            string ipOnly = colonIndex > -1 && input.IndexOf(':') == colonIndex
+                ? input.Substring(0, colonIndex)
+                : input;
+
+            // Support for IPv6 with port syntax like [::1]:1234
+            if (ipOnly.StartsWith("[") && ipOnly.Contains("]"))
+            {
+                int end = ipOnly.IndexOf("]");
+                ipOnly = ipOnly.Substring(1, end - 1);
+            }
+
+            System.Net.IPAddress ip;
+            if (!System.Net.IPAddress.TryParse(ipOnly, out ip))
+                return ExcelError.ExcelErrorNA;
+
+            byte[] bytes = ip.GetAddressBytes();
+
+            // IPv4 checks
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                if (bytes[0] == 10)
+                    return true; // 10.0.0.0/8
+                if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+                    return true; // 172.16.0.0/12
+                if (bytes[0] == 192 && bytes[1] == 168)
+                    return true; // 192.168.0.0/16
+                if (bytes[0] == 127)
+                    return true; // Loopback 127.0.0.0/8
+                if (bytes[0] == 169 && bytes[1] == 254)
+                    return true; // Link-local 169.254.0.0/16
+
+                return false;
+            }
+
+            // IPv6 checks
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                if (System.Net.IPAddress.IsLoopback(ip))
+                    return true;
+
+                if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal)
+                    return true;
+
+                // Unique local address fc00::/7
+                byte first = ip.GetAddressBytes()[0];
+                if ((first & 0xFE) == 0xFC)
+                    return true;
+
+                return false;
+            }
+
+            return false;
+        }
+        catch
+        {
+            return ExcelError.ExcelErrorNA;
         }
     }
 }
