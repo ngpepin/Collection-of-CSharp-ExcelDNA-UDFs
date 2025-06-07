@@ -8,6 +8,8 @@
  *
  * VERCELDNA, SETTARGETVERSION, GETTARGETVERSION, RECALCALL, GETITERATIONSTATUS, SETITERATION, ISVISIBLE, DESCRIBE, INJECTVALUE, FINDPOS, 
  * PUTOBJECT, GETOBJECT, PURGEOBJECTS,TRUESPLIT, ISMEMBEROF, GETTHREADS, SETTHREADS, HASHARRAY, ISLOCALIP
+ *
+ * New in version 3.2.0 (needs documenting):
  * 
  * Summary of Functions:
  *
@@ -107,6 +109,8 @@
  *    - Usage: =ISLOCALIP(ipAddress_string)
  *    - Returns: TRUE if local IP, FALSE otherwise or #N/A if invalid input
  *
+ * 20. ARRAY_SUBSTR - complete documentation
+ *
  * Notes:
  * - Functions marked as volatile recalculate when any cell changes
  * - Stateful functions (like INJECTVALUE) maintain state between calculations
@@ -125,8 +129,8 @@ public class C
 {
     // Version components
     private const string VERSION_MAJOR = "3";
-    private const string VERSION_MINOR = "1";
-    private const string VERSION_PATCH = "1";
+    private const string VERSION_MINOR = "2";
+    private const string VERSION_PATCH = "0";
 
     // Current version string
     private const string CurrentVersion =
@@ -1443,5 +1447,80 @@ public class C
         {
             return ExcelError.ExcelErrorNA;
         }
+
     }
+
+    [ExcelFunction(
+    Name = "ARRAY_SUBSTR",
+    Description = "Removes elements from the first array that also appear in the second array, preserving the first array's shape",
+    Category = "ExcelDNA Utilities",
+    IsVolatile = false)]
+    public static object[,] ArraySubstr(
+    [ExcelArgument(Description = "Array to subtract from (will be filtered)")] object[,] arrayA,
+    [ExcelArgument(Description = "Array of values to remove")] object[,] arrayB)
+    {
+        try
+        {
+            // Build lookup set from arrayB
+            HashSet<string> removalSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int rowsB = arrayB.GetLength(0);
+            int colsB = arrayB.GetLength(1);
+
+            for (int i = 0; i < rowsB; i++)
+            {
+                for (int j = 0; j < colsB; j++)
+                {
+                    object val = arrayB[i, j];
+                    if (val == null || val is ExcelEmpty || val is ExcelError)
+                        continue;
+                    removalSet.Add(val.ToString());
+                }
+            }
+
+            // Determine if arrayA is a row or column
+            int rowsA = arrayA.GetLength(0);
+            int colsA = arrayA.GetLength(1);
+            bool isRow = rowsA == 1 && colsA > 1;
+            bool isCol = colsA == 1 && rowsA > 1;
+
+            // Filter arrayA
+            List<object> filtered = new List<object>();
+            for (int i = 0; i < rowsA; i++)
+            {
+                for (int j = 0; j < colsA; j++)
+                {
+                    object val = arrayA[i, j];
+                    if (val == null || val is ExcelEmpty || val is ExcelError)
+                        continue;
+
+                    string valStr = val.ToString();
+                    if (!removalSet.Contains(valStr))
+                    {
+                        filtered.Add(val);
+                    }
+                }
+            }
+
+            // Prepare result in same orientation as arrayA
+            if (isRow)
+            {
+                object[,] result = new object[1, filtered.Count];
+                for (int i = 0; i < filtered.Count; i++)
+                    result[0, i] = filtered[i];
+                return result;
+            }
+            else // treat as column by default
+            {
+                object[,] result = new object[filtered.Count, 1];
+                for (int i = 0; i < filtered.Count; i++)
+                    result[i, 0] = filtered[i];
+                return result;
+            }
+        }
+        catch
+        {
+            return new object[,] { { ExcelError.ExcelErrorValue } };
+        }
+    }
+
 }
