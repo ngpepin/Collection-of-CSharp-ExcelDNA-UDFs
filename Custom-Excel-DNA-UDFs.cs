@@ -194,7 +194,7 @@ public class C
     //--------------------------------------------------------------------
     // Global volatility switch
     //--------------------------------------------------------------------
-    private static bool _enableVolatility = true;
+    private static bool _enableVolatility = false; // default is FALSE to avoid performance issues
 
     [ExcelFunction(Name = "SetVolatility", Description = "Enable (TRUE) or disable (FALSE) volatility for all UDFs", Category = "ExcelDNA Utilities", IsMacroType = true)]
     public static string SetVolatility([ExcelArgument(Description = "TRUE to enable, FALSE to disable")] bool enable)
