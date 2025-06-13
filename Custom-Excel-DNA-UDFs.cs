@@ -117,7 +117,55 @@
  * - Temporary storage persists until PURGEOBJECTS() is called or workbook closes
  * - Thread management requires Excel 2007 or later
  *
- */
+
+ *  Notes re: GLOBAL VOLATILITY SWITCH 
+ *
+ *  Why this exists
+ *  ---------------
+ *  Many of the original Excel-DNA functions were decorated with [IsVolatile = true] (or called
+ *  Application.Volatile in VBA).  On large models that can cause Excel to recalculate *every*
+ *  instance of those functions whenever **any** cell changes, interrupting editing and killing
+ *  performance.  
+ *
+ *  This file introduces an **opt-in, workbook-wide toggle** that lets the modeller decide:
+ *      *  Volatility ON   -  behave exactly like the old code (recalc on every change)
+ *      *  Volatility OFF  -  behave like ordinary non-volatile formulas (only recalc when an
+ *                            argument changes or the user presses F9 / Shift+F9)
+ *
+ *  How it works
+ *  ------------
+ *
+ *      New UDFs
+ *      --------------------------------------------------------------------
+ *      NAME              USAGE                              EFFECT
+ *      --------------------------------------------------------------------
+ *      SetVolatility()   =SetVolatility(TRUE/FALSE)         Enables or disables volatility
+ *      GetVolatility()   =GetVolatility()                   Returns "ENABLED" / "DISABLED"
+ *
+ *      Helper inside the code
+ *      internal static void MaybeVolatile()
+ *         - Called at the top of any function that *used* to be marked volatile.
+ *         - Internally calls `XlCall.Excel(xlfVolatile, true)` **only when** the global flag is ON.
+ *
+ *      Code change pattern
+ *      OLD:   [ExcelFunction(IsVolatile = true)] public static object Foo(...) { ... }
+ *      NEW:   [ExcelFunction] public static object Foo(...) { MaybeVolatile(); ... }
+ *
+ *  Behavioural impact
+ *  ------------------
+ *  * Built-in Excel volatile functions (NOW, RAND, OFFSET, INDIRECT, etc.) are **unaffected.**
+ *  * Any *other* add-ins remain untouched unless they explicitly reference the same switch.
+ *  * Pressing F9 or Shift+F9 still forces a recalculation of everything, as usual.
+ *  * Models that relied on "tick-every-calculation" side-effects (e.g. INJECTVALUE driving a
+ *    state machine) should either keep volatility ON or accept an explicit trigger argument.
+ *
+ *  Default state & persistence
+ *  ---------------------------
+ *  * The flag defaults to **TRUE** (legacy behaviour) when the add-in loads.
+ *  * It persists only for the current Excel session; store `=SetVolatility(FALSE)` in a cell
+ *    or run it from VBA/Auto-open if you want it off by default for a workbook.
+ *
+*/  
 
 using System;
 using System.Collections.Generic;
@@ -127,98 +175,82 @@ using Excel = Microsoft.Office.Interop.Excel;
 
 public class C
 {
-    // Version components
+    //--------------------------------------------------------------------
+    // Version info
+    //--------------------------------------------------------------------
     private const string VERSION_MAJOR = "3";
-    private const string VERSION_MINOR = "2";
-    private const string VERSION_PATCH = "0";
-
-    // Current version string
-    private const string CurrentVersion =
-        VERSION_MAJOR + "." + VERSION_MINOR + "." + VERSION_PATCH;
-
+    private const string VERSION_MINOR = "3";
+    private const string VERSION_PATCH = "0";   
+    private const string CurrentVersion = VERSION_MAJOR + "." + VERSION_MINOR + "." + VERSION_PATCH;
     private static string _targetVersion = CurrentVersion;
 
-    public static string Version
-    {
-        get { return CurrentVersion; }
-    }
-
+    public static string Version { get { return CurrentVersion; } }
     public static string TargetVersion
     {
         get { return _targetVersion; }
-        set
+        set { if (System.Text.RegularExpressions.Regex.IsMatch(value, @"^\d+\.\d+\.\d+$")) _targetVersion = value; }
+    }
+
+    //--------------------------------------------------------------------
+    // Global volatility switch
+    //--------------------------------------------------------------------
+    private static bool _enableVolatility = true;
+
+    [ExcelFunction(Name = "SetVolatility", Description = "Enable (TRUE) or disable (FALSE) volatility for all UDFs", Category = "ExcelDNA Utilities", IsMacroType = true)]
+    public static string SetVolatility([ExcelArgument(Description = "TRUE to enable, FALSE to disable")] bool enable)
+    {
+        _enableVolatility = enable;
+        return "Volatility " + (_enableVolatility ? "ENABLED" : "DISABLED");
+    }
+
+    [ExcelFunction(Name = "GetVolatility", Description = "Returns current volatility status", Category = "ExcelDNA Utilities")]
+    public static string GetVolatility()
+    {
+        return _enableVolatility ? "ENABLED" : "DISABLED";
+    }
+
+    internal static void MaybeVolatile()
+    {
+        if (_enableVolatility)
         {
-            // Validate version format (simple check for x.y.z pattern)
-            if (System.Text.RegularExpressions.Regex.IsMatch(value, @"^\d+\.\d+\.\d+$"))
-            {
-                _targetVersion = value;
-            }
+            try { XlCall.Excel(XlCall.xlfVolatile, true); } catch { }
         }
     }
-    // Usage Examples in Other UDFs:
-    //
-    // [ExcelFunction(Description = "Example UDF with version-aware behavior")]
-    // public static object VersionAwareFunction()
-    // {
-    //     // Compare versions using standard string comparison
-    //     if (string.Compare(TargetVersion, "2.0.0") < 0)
-    //     {
-    //         // Legacy behavior for pre-2.0 versions
-    //         return LegacyImplementation();
-    //     }
-    //     else
-    //     {
-    //         // Current behavior
-    //         return CurrentImplementation();
-    //     }
-    // }
 
-    private static Dictionary<string, object> objectStore = new Dictionary<string, object>();
-    private static Dictionary<string, object> injectedCells = new Dictionary<string, object>();
-    private static Dictionary<string, Tuple<object, object>> invocationCache =
-        new Dictionary<string, Tuple<object, object>>();
-    private static Dictionary<string, Tuple<object, object>> visibilityCache =
-        new Dictionary<string, Tuple<object, object>>();
+    //--------------------------------------------------------------------
+    // State dictionaries
+    //--------------------------------------------------------------------
+    private static readonly Dictionary<string, object> objectStore = new Dictionary<string, object>();
+    private static readonly Dictionary<string, object> injectedCells = new Dictionary<string, object>();
+    private static readonly Dictionary<string, Tuple<object, object>> invocationCache = new Dictionary<string, Tuple<object, object>>();
+    private static readonly Dictionary<string, Tuple<object, object>> visibilityCache = new Dictionary<string, Tuple<object, object>>();
+
     private static Excel.Application _excelApp;
     private static Excel.Application _app;
-    const int defCachingTime = 10; // seconds
+    private const int defCachingTime = 10; // seconds
 
-    // This is a helper method to manage caching time for the IsVisible UDF.
+    //--------------------------------------------------------------------
+    // Excel helpers
+    //--------------------------------------------------------------------
     public static void AttachEvents()
     {
         _excelApp = (Excel.Application)ExcelDnaUtil.Application;
-        _excelApp.WorkbookBeforeClose += WorkbookBeforeClose;
+        if (_excelApp != null) _excelApp.WorkbookBeforeClose += WorkbookBeforeClose;
     }
 
-    // This is a helper method to handle cleanup actions when the workbook is closed.
-    private static void WorkbookBeforeClose(Excel.Workbook Wb, ref bool Cancel)
-    {
-        // Perform cleanup actions here
-        Cleanup();
-    }
+    private static void WorkbookBeforeClose(Excel.Workbook Wb, ref bool Cancel) { Cleanup(); }
 
-    // This is a helper method to detach events when the add-in is unloaded.
-    public static void DetachEvents()
-    {
-        if (_excelApp != null)
-        {
-            _excelApp.WorkbookBeforeClose -= WorkbookBeforeClose;
-        }
-    }
+    public static void DetachEvents() { if (_excelApp != null) _excelApp.WorkbookBeforeClose -= WorkbookBeforeClose; }
 
-    // This is a helper method to get the Excel application instance.
     public static Excel.Application App
     {
         get
         {
-            if (_app == null)
-                _app = (Excel.Application)ExcelDnaUtil.Application;
+            if (_app == null) _app = (Excel.Application)ExcelDnaUtil.Application;
             return _app;
         }
     }
 
-    // Call this helper method to clean up when the add-in is unloaded or when the Excel application is closed.
-    // It releases the COM object and sets it to null. This is important to avoid memory leaks and ensure proper cleanup.
     public static void Cleanup()
     {
         if (_app != null)
@@ -228,1299 +260,476 @@ public class C
         }
     }
 
-    //
-    // UDFS START HERE
-    //
-    // vExcelDNA UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // Returns the current version of the UDF collection
-    [ExcelFunction(
-        Name = "vExcelDNA",
-        Description = "Returns the version of the Excel-DNA UDF collection",
-        Category = "ExcelDNA Utilities",
-        IsVolatile = false
-    )]
-    public static string GetExcelDnaVersion()
-    {
-        return CurrentVersion;
-    }
+    //--------------------------------------------------------------------
+    // 1. Version helpers
+    //--------------------------------------------------------------------
+    [ExcelFunction(Name = "vExcelDNA", Description = "Returns the version of this UDF collection", Category = "ExcelDNA Utilities")]
+    public static string GetExcelDnaVersion() { return CurrentVersion; }
 
-    //
-    // SetTargetVersion UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // Sets the compatibility target version for backward compatibility
-    [ExcelFunction(
-        Name = "SetTargetVersion",
-        Description = "Sets the target version for backward compatibility",
-        Category = "ExcelDNA Utilities",
-        IsMacroType = true
-    )]
-    public static string SetTargetVersion(
-        [ExcelArgument(Description = "Target version in x.y.z format")] string version
-    )
+    [ExcelFunction(Name = "SetTargetVersion", Description = "Sets the target version for backward compatibility", Category = "ExcelDNA Utilities", IsMacroType = true)]
+    public static string SetTargetVersion(string version)
     {
-        string previousVersion = TargetVersion;
+        string prev = TargetVersion;
         TargetVersion = version;
-        return "Target version changed from " + previousVersion + " to " + TargetVersion;
+        return "Target version changed from " + prev + " to " + TargetVersion;
     }
 
-    //
-    // GetTargetVersion UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // Gets the current compatibility target version
-    [ExcelFunction(
-        Name = "GetTargetVersion",
-        Description = "Gets the current target version for backward compatibility",
-        Category = "ExcelDNA Utilities",
-        IsVolatile = false
-    )]
-    public static string GetTargetVersion()
-    {
-        return TargetVersion;
-    }
+    [ExcelFunction(Name = "GetTargetVersion", Description = "Gets the current target version", Category = "ExcelDNA Utilities")]
+    public static string GetTargetVersionFunction() { return TargetVersion; }
 
-    // RecalcAll UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function triggers a full recalculation of the workbook.
-    // It uses the Excel application object to perform the recalculation.
-    // The function is marked as a UDF (User Defined Function) and can be called from Excel.
-
-    [ExcelFunction(Description = "Triggers full recalculation of the workbook")]
+    //--------------------------------------------------------------------
+    // 2. RecalcAll
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "Triggers a full workbook recalculation", Category = "ExcelDNA Utilities")]
     public static object RecalcAll()
     {
         try
         {
-            // Verify we have a valid Excel application instance
-            var excelApp = (Excel.Application)ExcelDnaUtil.Application;
-            if (excelApp == null)
-                return ExcelError.ExcelErrorValue;
-
-            // Queue as macro to ensure proper execution context
-            ExcelAsyncUtil.QueueAsMacro(() =>
-            {
-                try
-                {
-                    excelApp.CalculateFull();
-                }
-                catch (Exception)
-                {
-                    // Silently handle any calculation errors
-                }
-            });
-
+            Excel.Application xl = (Excel.Application)ExcelDnaUtil.Application;
+            if (xl == null) return ExcelError.ExcelErrorValue;
+            ExcelAsyncUtil.QueueAsMacro(delegate { try { xl.CalculateFull(); } catch { } });
             return "TRUE";
         }
-        catch (System.Runtime.InteropServices.COMException)
-        {
-            return ExcelError.ExcelErrorValue;
-        }
-        catch (Exception)
-        {
-            return ExcelError.ExcelErrorValue;
-        }
+        catch { return ExcelError.ExcelErrorValue; }
     }
 
-    //
-    // GetIterationStatus UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function retrieves the status of Excel's iterative calculations mode.
-    // It returns a string indicating whether the mode is ON or OFF,
-    // along with the maximum number of iterations and maximum change between iterations.
-    // The function uses the Excel application object to access the properties
-    // related to iterative calculations.
-    // It also handles exceptions and returns an error message if an exception occurs.
-    // The function is marked as volatile, meaning it will recalculate whenever any cell in the workbook changes.
-
-    [ExcelFunction(
-        Description = "Returns the status of Excel's iterative calculations mode.",
-        IsVolatile = true
-    )]
+    //--------------------------------------------------------------------
+    // 3. Iteration settings
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "Returns Excel iterative calculation settings", Category = "ExcelDNA Utilities")]
     public static string GetIterationStatus()
     {
-        bool isIterationOn = false;
-        int maxIterations = 9999;
-        double maxChange = 0.9999;
-        string infoMessage = "";
-        string stateMsg = "";
-
+        MaybeVolatile();
         try
         {
-            isIterationOn = App.Iteration;
-            maxIterations = App.MaxIterations;
-            maxChange = App.MaxChange;
-
-            if (isIterationOn)
-                stateMsg = "ON";
-            else
-                stateMsg = "OFF";
-
-            string maxChange_str = maxChange.ToString();
-            infoMessage =
-                "Status: "
-                + stateMsg
-                + "  Max Iterations: "
-                + maxIterations.ToString()
-                + "  Max Change: "
-                + maxChange.ToString();
+            bool on = App.Iteration;
+            return "Status: " + (on ? "ON" : "OFF") + "  Max Iterations: " + App.MaxIterations + "  Max Change: " + App.MaxChange;
         }
-        catch (Exception ex)
-        {
-            return ex.Message;
-        }
-
-        return infoMessage;
+        catch (Exception ex) { return ex.Message; }
     }
 
-    //
-    // SetIteration UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function enables or disables Excel's iterative calculations mode
-    // and sets the maximum number of iterations and maximum change between iterations.
-    // It takes three parameters: IterationOn (boolean), maxIterations (integer),
-    // and maxChange (double).
-    // The function checks if the parameters are valid and sets the corresponding properties
-    // in the Excel application.
-    // It also handles exceptions and returns an error message if an exception occurs.
-    // The function returns a confirmation message indicating the status of the iterative calculations mode.
-
-    [ExcelFunction(
-        Description = "Enables or disables Excel iterative calculations mode and sets parameters."
-    )]
-    public static string SetIteration(
-        [ExcelArgument(Description = "The state of the iterative calculation option.")]
-            bool IterationOn = false,
-        [ExcelArgument(Description = "The maximum number of iterations.")] int maxIterations = 100,
-        [ExcelArgument(Description = "The maximum change between iterations.")]
-            double maxChange = 0.001
-    )
+    [ExcelFunction(Description = "Enable/disable iterative calculation and set parameters", Category = "ExcelDNA Utilities")]
+    public static string SetIteration(bool IterationOn, int maxIterations, double maxChange)
     {
-        double myChange = 0.001;
-        int myIterations = 100;
-
         try
         {
             App.Iteration = IterationOn;
-
-            myIterations = maxIterations;
-            if (myIterations <= 0)
-                myIterations = 100;
-            App.MaxIterations = myIterations;
-
-            myChange = maxChange;
-            if ((myChange <= 0.0) || (myChange >= 1.0))
-                myChange = 0.001;
-            App.MaxChange = myChange;
+            App.MaxIterations = (maxIterations < 1 ? 100 : maxIterations);
+            App.MaxChange = (maxChange > 0.0 && maxChange < 1.0) ? maxChange : 0.001;
         }
-        catch (Exception ex)
-        {
-            return ex.Message;
-        }
-
-        string confirmationMsg = GetIterationStatus();
-        return confirmationMsg;
+        catch (Exception ex) { return ex.Message; }
+        return GetIterationStatus();
     }
 
-    [ExcelFunction(
-        Description = "Returns TRUE if the cell is visible",
-        IsVolatile = true,
-        IsMacroType = true
-    )]
-
-
-    //
-    // IsVisible UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function checks if a cell is visible in the Excel worksheet.
-    // It takes one parameter: the caching time in seconds (default is 10 seconds).
-    // The function uses a dictionary to cache the visibility status of cells.
-    // It checks if the cell is hidden in either the row or column.
-    // If the cell is visible, it returns "TRUE", otherwise it returns "FALSE".
-    // The function also handles exceptions and returns an error message if an exception occurs.
-    // The function is marked as volatile, meaning it will recalculate whenever any cell in the workbook changes.
-
-    public static object IsVisible(
-        [ExcelArgument(Description = "The caching time in seconds (default is 10 seconds).")]
-            int cachingTime = defCachingTime
-    )
+    //--------------------------------------------------------------------
+    // 4. IsVisible
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "TRUE if caller cell is visible (row/col not hidden)", Category = "ExcelDNA Utilities", IsMacroType = true)]
+    public static object IsVisible(int cachingTime)
     {
-        Excel.Range range = null;
-        DateTime lastChecked = DateTime.MinValue;
-        bool isVis = false;
-        bool RetVis = false;
-
+        MaybeVolatile();
         try
         {
-            var caller = XlCall.Excel(XlCall.xlfCaller) as ExcelReference;
-            if (caller == null)
-                return ExcelDna.Integration.ExcelError.ExcelErrorRef;
-
+            ExcelReference caller = XlCall.Excel(XlCall.xlfCaller) as ExcelReference;
+            if (caller == null) return ExcelError.ExcelErrorRef;
             string address = (string)XlCall.Excel(XlCall.xlfReftext, caller, true);
 
-            if (visibilityCache.ContainsKey(address))
+            Tuple<object, object> tup;
+            if (visibilityCache.TryGetValue(address, out tup))
             {
-                Tuple<object, object> tuple = visibilityCache[address];
-                lastChecked = (DateTime)tuple.Item1;
-                isVis = (bool)tuple.Item2;
-
-                if ((DateTime.Now - lastChecked).TotalSeconds < cachingTime)
-                {
-                    // Return cached result if last check was less than 5 seconds ago
-                    if (isVis)
-                        return "TRUE";
-                    else
-                        return "FALSE";
-                }
+                DateTime ts = (DateTime)tup.Item1;
+                bool vis = (bool)tup.Item2;
+                if ((DateTime.Now - ts).TotalSeconds < cachingTime) return vis ? "TRUE" : "FALSE";
             }
 
-            // If not cached or cache is outdated, check visibility (involves COM call)
-            range = App.Range[address];
-            if (range == null)
-                return ExcelDna.Integration.ExcelError.ExcelErrorNA;
-
-            RetVis = !((bool)range.EntireRow.Hidden || (bool)range.EntireColumn.Hidden);
-
-            // Update the cache
-            visibilityCache[address] = new Tuple<object, object>(DateTime.Now, RetVis);
-
-            if (RetVis)
-                return "TRUE";
-            else
-                return "FALSE";
+            Excel.Range rng = App.Range[address];
+            bool rowHidden = rng.EntireRow.Hidden is bool ? (bool)rng.EntireRow.Hidden : false;
+            bool columnHidden = rng.EntireColumn.Hidden is bool ? (bool)rng.EntireColumn.Hidden : false;
+            bool visible = !(rowHidden || columnHidden);
+            visibilityCache[address] = new Tuple<object, object>(DateTime.Now, visible);
+            return visible ? "TRUE" : "FALSE";
         }
-        catch (Exception ex)
-        {
-            return ex.Message;
-        }
+        catch (Exception ex) { return ex.Message; }
     }
 
-    //
-    // Describe UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function describes the value passed to the function or contained within a referenced cell.
-    // It takes one parameter: the cell for which the value should be described.
-    // The function checks the type of the value and returns a string description of it.
-    // The function handles different types of values, including double, string, boolean,
-    // ExcelError, object array, ExcelMissing, ExcelEmpty, and ExcelReference.
-    // The function also handles cases where the value is null or of an unexpected type.
-    // The function is marked as volatile, meaning it will recalculate whenever any cell in the workbook changes.
-
-    [ExcelFunction(
-        Description = "Describes the value passed to the function or contained within a referenced cell.",
-        IsMacroType = true
-    )]
-    public static string Describe( // [ExcelArgument(AllowReference = false)] object arg)
-        [ExcelArgument(Description = "The cell for which the value should be described.")] object arg
-    )
+    //--------------------------------------------------------------------
+    // 5. Describe
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "Describes a value or reference", Category = "ExcelDNA Utilities", IsMacroType = true)]
+    public static string Describe(object arg)
     {
-        if (arg is double)
-            return "Double: " + (double)arg;
-        else if (arg is string)
-            return "String: " + (string)arg;
-        else if (arg is bool)
-            return "Boolean: " + (bool)arg;
-        else if (arg is ExcelError)
-            return "ExcelError: " + arg.ToString();
-        else if (arg is object[,])
-            // The object array returned here may contain a mixture of different types,
-            // reflecting the different cell contents.
-            return string.Format(
-                "Array[{0},{1}]",
-                ((object[,])arg).GetLength(0),
-                ((object[,])arg).GetLength(1)
-            );
-        else if (arg is ExcelMissing)
-            return "Missing";
-        else if (arg is ExcelEmpty)
-            return "Empty";
-        else if (arg is ExcelReference)
-            return "Reference: " + XlCall.Excel(XlCall.xlfReftext, arg, true);
-        else
-            return "!?Unheard Of";
+        if (arg is double) return "Double: " + (double)arg;
+        if (arg is string) return "String: " + (string)arg;
+        if (arg is bool) return "Boolean: " + ((bool)arg);
+        if (arg is ExcelError) return "ExcelError: " + arg.ToString();
+        if (arg is object[,])
+        {
+            object[,] arr = (object[,])arg;
+            return "Array[" + arr.GetLength(0) + "," + arr.GetLength(1) + "]";
+        }
+        if (arg is ExcelMissing) return "Missing";
+        if (arg is ExcelEmpty) return "Empty";
+        if (arg is ExcelReference) return "Reference: " + XlCall.Excel(XlCall.xlfReftext, arg, true);
+        return "!?Unheard Of";
     }
 
-    //
-    // InjectValue UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function injects a specified value into a cell if it has not already been injected
-    // during the current calculation session.
-    // It takes two parameters: the cell reference where the value will be injected
-    // and the value to inject into the cell.
-    // The function checks if the cell reference and value are valid and returns an error if not.
-    // It also checks if the cell reference is a valid ExcelReference and retrieves the cell's address.
-    // The function uses a dictionary to keep track of injected cells and their values.
-    // If the cell has already been injected with the same value, it returns the existing value.
-    // If the cell has not been injected or has a different value, it injects the new value
-    // and updates the dictionary.
-    // The function handles exceptions and returns an error message if an exception occurs.
-    // The function is marked as volatile, meaning it will recalculate whenever any cell in the workbook changes.
-
-    [ExcelFunction(
-        Description = "Injects a specified value into a cell if not already done during this calculation session"
-    )]
-    public static object InjectValue(
-        [ExcelArgument(
-            Description = "The cell reference where the value will be injected",
-            AllowReference = true
-        )]
-            object potentialRef,
-        [ExcelArgument(Description = "The value to inject into the cell")] object value
-    )
+    //--------------------------------------------------------------------
+    // 6. InjectValue
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "Injects a value into a cell (stateful)", Category = "ExcelDNA Utilities")]
+    public static object InjectValue([ExcelArgument(AllowReference = true)] object potentialRef, object value)
     {
-        string cellKey = null;
+        MaybeVolatile();
+        if (potentialRef == null || value == null) return ExcelError.ExcelErrorValue;
+        ExcelReference cellRef = potentialRef as ExcelReference;
+        if (cellRef == null) return "Error: first argument must be a cell reference.";
 
-        if (potentialRef == null || value == null)
-            return ExcelDna.Integration.ExcelError.ExcelErrorValue;
+        string address = (string)XlCall.Excel(XlCall.xlfAddress, 1 + cellRef.RowFirst, 1 + cellRef.ColumnFirst);
+        string key = cellRef.SheetId + "!" + address;
 
-        try
-        {
-            ExcelReference cellRef = potentialRef as ExcelReference;
-            if (cellRef == null)
-                return "Error: The first argument must be a cell reference.";
+        object[,] box = new object[1, 1]; box[0, 0] = value;
+        object prev;
+        if (injectedCells.TryGetValue(key, out prev) && Equals(prev, value)) return box;
 
-            try
-            {
-                string cellReference = (string)
-                    XlCall.Excel(XlCall.xlfAddress, 1 + cellRef.RowFirst, 1 + cellRef.ColumnFirst);
-                long sheetId = (long)cellRef.SheetId;
-                cellKey = sheetId + "!" + cellReference;
-            }
-            catch // (Exception ex)
-            {
-                return ExcelDna.Integration.ExcelError.ExcelErrorValue;
-                // return "Error: An exception occurred - " + ex.Message;
-            }
-
-            // Default return value
-            object[,] save_values = new object[1, 1]
-            {
-                { value }
-            };
-
-            if (injectedCells.ContainsKey(cellKey))
-            {
-                if (injectedCells[cellKey].Equals(value))
-                    // return cellKey;
-                    return save_values; // No change, so return the value
-            }
-
-            // Inject the value
-            ExcelAsyncUtil.QueueAsMacro(() =>
-            {
-                object[,] values = new object[1, 1]
-                {
-                    { value }
-                };
-                if (cellRef.GetValue() != values)
-                {
-                    cellRef.SetValue(values);
-
-                    // Record the injection
-                    injectedCells[cellKey] = value;
-                }
-                save_values = values;
-            });
-
-            return save_values;
-        }
-        catch (System.Exception ex)
-        {
-            return "Failed to inject value due to: " + ex.Message;
-        }
+        ExcelAsyncUtil.QueueAsMacro(delegate { try { cellRef.SetValue(box); injectedCells[key] = value; } catch { } });
+        return box;
     }
 
-    //
-    // FindPos UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function finds the position of a substring within a text string.
-    // It takes three parameters: the text to search, the substring to find,
-    // and the occurrence instance to find.
-    // The function returns the position of the substring in the text string.
-    // If the substring is not found, it returns an error.
-    // The function handles case-insensitive searches by converting both the text and substring to lowercase.
-    // It also handles the case where the instance is -1, which returns the last occurrence of the substring.
-    // The function uses a list to store the indices of all occurrences of the substring.
-    // The function checks if the text and substring are null or empty and returns an error if they are.
-    // The function also checks if the instance is out of range and returns an error if it is.
-    // The function is marked as volatile, meaning it will recalculate whenever any cell in the workbook changes.
-    // The function uses the IndexOf method to find the position of the substring within the text string.
-    // The function also handles exceptions and returns an error message if an exception occurs.
-    // The function is marked as a UDF (User Defined Function) and can be called from Excel.
-    // The function is also marked as a macro type, meaning it can be called from a macro.
-
-    [ExcelFunction(Description = "Returns the position of a substring within a text string.")]
-    public static object FindPos(
-        [ExcelArgument(Description = "The text to search")] string text,
-        [ExcelArgument(Description = "The substring to find")] string substring,
-        [ExcelArgument(Description = "The occurrence instance to find")] int instance
-    )
+    //--------------------------------------------------------------------
+    // 7. FINDPOS
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "Returns the Nth (or last=-1) position of substring (case-insensitive)", Category = "ExcelDNA Utilities")]
+    public static object FindPos(string text, string substring, int instance)
     {
-        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(substring))
-            return ExcelDna.Integration.ExcelError.ExcelErrorValue;
-
-        // Normalize the string and substring to lowercase for case-insensitive comparison.
-        string lowerText = text.ToLower();
-        string lowerSubstring = substring.ToLower();
-        var indices = new List<int>();
-
-        // Find all occurrences of the substring.
-        int pos = lowerText.IndexOf(lowerSubstring);
-        while (pos != -1)
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(substring)) return ExcelError.ExcelErrorValue;
+        string t = text.ToLower();
+        string sub = substring.ToLower();
+        List<int> idx = new List<int>();
+        int p = t.IndexOf(sub, StringComparison.Ordinal);
+        while (p != -1)
         {
-            indices.Add(pos + 1); // Convert 0-based index to 1-based for Excel compatibility
-            pos = lowerText.IndexOf(lowerSubstring, pos + 1);
+            idx.Add(p + 1); // 1‑based for Excel
+            p = t.IndexOf(sub, p + 1, StringComparison.Ordinal);
         }
-
-        // Return the appropriate position based on instance value.
         if (instance == -1)
         {
-            if (indices.Count == 0)
-                return ExcelDna.Integration.ExcelError.ExcelErrorValue; // Return error if no instances found
-            return indices.Last(); // Return the last instance
+            if (idx.Count == 0) return ExcelError.ExcelErrorValue;
+            return idx[idx.Count - 1];
         }
-        else if (instance > 0 && instance <= indices.Count)
-        {
-            return indices[instance - 1]; // Return the nth instance
-        }
-        else
-        {
-            return ExcelDna.Integration.ExcelError.ExcelErrorValue; // Return error if instance is out of range
-        }
+        if (instance > 0 && instance <= idx.Count) return idx[instance - 1];
+        return ExcelError.ExcelErrorValue;
     }
 
-    //
-    // PutObject UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function stores an object in a temporary storage dictionary.
-    // It takes a name, the object to store, and optional parameters for overwriting
-    // existing objects and displaying debug information.
-    // The function checks if the name is valid and if the object already exists in the cache.
-    // If the object already exists and force is set to false, it returns an error message.
-    // If the object is successfully stored, it returns the stored object.
-    // The function also handles exceptions and returns an error message if an exception occurs.
-    // The function is marked as volatile, meaning it will recalculate whenever any cell in the workbook changes.
-    // The function uses a dictionary to store the objects, allowing for efficient retrieval.
-    // The function also uses a cache to avoid redundant writes to the same key with the same value.
-    // The function also checks if the caller reference matches the one in the cache to avoid conflicts.
-    // The function uses a tuple to store the caller reference and the value in the cache.
-    // The function also handles cases where the name is empty or null,
-    // and provides an option to display debug information.
-
-    [ExcelFunction(Description = "Enters an object into temporary storage.", IsVolatile = true)]
-    public static object PutObject(
-        [ExcelArgument(Description = "The name of the object to store.")] string name,
-        [ExcelArgument(Description = "The object to store.")] object value,
-        [ExcelArgument(Description = "Overwrite the object if it already exists.")]
-            bool force = true,
-        [ExcelArgument(Description = "Display debug information.")] bool debug = false
-    )
+    //--------------------------------------------------------------------
+    // 8. PutObject / GetObject / PurgeObjects
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "Stores an object in a temporary cache", Category = "ExcelDNA Utilities")]
+    public static object PutObject(string name, object value, bool force, bool debug)
     {
-        string CacheKey = null;
-        string callerReference = null;
-        object caller = XlCall.Excel(XlCall.xlfCaller);
+        MaybeVolatile();
+        if (string.IsNullOrWhiteSpace(name)) return debug ? "Error: name empty" : (object)ExcelError.ExcelErrorValue;
 
-        try
+        ExcelReference caller = (ExcelReference)XlCall.Excel(XlCall.xlfCaller);
+        string callerAddr = (string)XlCall.Excel(XlCall.xlfAddress, 1 + caller.RowFirst, 1 + caller.ColumnFirst);
+        string cacheKey = callerAddr + ":" + name;
+
+        Tuple<object, object> tup;
+        if (invocationCache.TryGetValue(cacheKey, out tup))
         {
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                if (debug)
-                    return "Error: Name parameter cannot be empty.";
-                else
-                    return ExcelDna.Integration.ExcelError.ExcelErrorValue;
-            }
-
-            try
-            {
-                //
-                // Check if this exact call has been made before and ignore if it has
-                //
-                ExcelReference caller_er = caller as ExcelReference;
-                callerReference = (string)
-                    XlCall.Excel(
-                        XlCall.xlfAddress,
-                        1 + caller_er.RowFirst,
-                        1 + caller_er.ColumnFirst
-                    );
-                CacheKey = callerReference + ":" + name;
-
-                if (invocationCache.ContainsKey(CacheKey))
-                {
-                    Tuple<object, object> tuple = invocationCache[CacheKey];
-                    object inv_caller = tuple.Item1;
-                    string inv_callerReference = (string)inv_caller;
-                    object inv_value = tuple.Item2;
-
-                    if (inv_callerReference != callerReference)
-                    {
-                        if (debug)
-                            return "Caller does not match the caller in the keystore.";
-                        else
-                            return ExcelDna.Integration.ExcelError.ExcelErrorName;
-                    }
-                    else
-                    {
-                        if (Equals(inv_value, value))
-                        {
-                            // If cell and value are the same, skip writing
-                            if (debug)
-                                return "This is a redundant write to the same key of the same value, ignoring.";
-                            else
-                                return value;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                return "Error: An exception occurred - " + ex.Message;
-            }
-            // Update or add to invocation cache so we know no to keep re-writing the same value
-            invocationCache[CacheKey] = new Tuple<object, object>(callerReference, value);
-
-            //
-            // Store the object into the object store
-            //
-            if (objectStore.ContainsKey(name) && !force)
-            {
-                if (debug)
-                    return "Error: Object with this name already exists. Set 'force' to TRUE to overwrite.";
-                else
-                    return ExcelDna.Integration.ExcelError.ExcelErrorName;
-            }
-            objectStore[name] = value; // This will add or overwrite if force is TRUE
-
-            return value; // Indicate successful storage of object
+            if (Equals(tup.Item2, value)) return value; // redundant write
         }
-        catch (Exception ex)
+        invocationCache[cacheKey] = new Tuple<object, object>(callerAddr, value);
+
+        if (objectStore.ContainsKey(name) && !force)
         {
-            return "Error: An exception occurred - " + ex.Message;
+            if (debug) return "Exists";
+            return (object)ExcelError.ExcelErrorName;
         }
+        objectStore[name] = value;
+        return value;
     }
 
-    //
-    // GetObject UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function retrieves an object from temporary storage based on its name.
-    // It returns the object if found, or an error message if not found.
-    // The function also handles cases where the name is empty or null,
-    // and provides an option to display debug information.
-    // The function is marked as volatile, meaning it will recalculate whenever any cell in the workbook changes.
-    // The function also handles exceptions and returns an error message if an exception occurs.
-    // The function uses a dictionary to store the objects, allowing for efficient retrieval.
-
-    [ExcelFunction(Description = "Retrieves an object from temporary storage.", IsVolatile = true)]
-    public static object GetObject(
-        [ExcelArgument(Description = "The name of the object to retrieve.")] string name,
-        [ExcelArgument(Description = "Display debug information.")] bool debug = false
-    )
+    [ExcelFunction(Description = "Retrieves an object from the temporary cache", Category = "ExcelDNA Utilities")]
+    public static object GetObject(string name, bool debug)
     {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                if (debug)
-                    return "Error: Name parameter cannot be empty.";
-                else
-                    return ExcelDna.Integration.ExcelError.ExcelErrorValue;
-            }
-
-            if (!objectStore.ContainsKey(name))
-            {
-                if (debug)
-                    return "Error: No object found with this name.";
-                else
-                    return ExcelDna.Integration.ExcelError.ExcelErrorName;
-            }
-
-            return objectStore[name] ?? "Error: Stored object is null.";
-        }
-        catch (Exception ex)
-        {
-            return "Error: An exception occurred -" + ex.Message;
-        }
+        MaybeVolatile();
+        if (string.IsNullOrWhiteSpace(name)) return debug ? "Error: name empty" : (object)ExcelError.ExcelErrorValue;
+        if (!objectStore.ContainsKey(name)) return debug ? "Error: not found" : (object)ExcelError.ExcelErrorName;
+        object obj = objectStore[name];
+        if (obj == null) return debug ? "Error: null" : (object)ExcelError.ExcelErrorValue;
+        return obj;
     }
 
-    //
-    // PurgeObjects UDF
-    // ------------------------------------------------------------------------------------
-    //
+    [ExcelFunction(Description = "Clears all stored objects", Category = "ExcelDNA Utilities")]
+    public static string PurgeObjects() { objectStore.Clear(); return "TRUE"; }
 
-    [ExcelFunction(Description = "Purges all stored objects.")]
-    public static string PurgeObjects()
+    //--------------------------------------------------------------------
+    // 9. TrueSplit
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "Splits strings by delimiter and returns dynamic array", Category = "ExcelDNA Utilities")]
+    public static object[,] TrueSplit(object[] inputStrings, string delimiter)
     {
-        objectStore.Clear(); // Clears the dictionary holding the objects
-        return "TRUE";
+        int maxCols = 1;
+        for (int i = 0; i < inputStrings.Length; i++)
+        {
+            string sTmp = inputStrings[i] as string;
+            if (sTmp != null)
+            {
+                int cnt = sTmp.Split(new string[] { delimiter }, StringSplitOptions.None).Length;
+                if (cnt > maxCols) maxCols = cnt;
+            }
+        }
+        object[,] result = new object[inputStrings.Length, maxCols];
+        for (int r = 0; r < inputStrings.Length; r++)
+        {
+            string s = inputStrings[r] as string;
+            if (s != null)
+            {
+                string[] parts = s.Split(new string[] { delimiter }, StringSplitOptions.None);
+                for (int c = 0; c < parts.Length; c++) result[r, c] = parts[c];
+            }
+            else if (inputStrings[r] is ExcelError)
+            {
+                result[r, 0] = inputStrings[r];
+            }
+            else
+            {
+                result[r, 0] = inputStrings[r] == null ? "" : inputStrings[r].ToString();
+            }
+        }
+        return result;
     }
 
-    //
-    // TrueSplit UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function splits strings by a specified delimiter and returns a dynamic array of substrings.
-    // It handles both single strings and arrays of strings.
-    // It also handles Excel-specific types like ExcelEmpty and ExcelError.
-    // The function returns a 2D array where each row corresponds to an input string,
-    // and each column corresponds to a substring obtained by splitting the input string.
-    // If the input is null or empty, it returns an empty string.
-    // If the input is an error, it returns the error in the first column and empty strings in the rest.
-    // The function also handles cases where the number of substrings varies across input strings,
-    // filling remaining columns with empty strings as needed.
-
-
-    [ExcelFunction(
-        Description = "Splits strings by delimiter and returns a dynamic array of substrings"
-    )]
-    public static object[,] TrueSplit(
-        [ExcelArgument(Description = "Range or array of strings to split")] object[] inputStrings,
-        [ExcelArgument(Description = "Delimiter to split by")] string delimiter
-    )
+    //--------------------------------------------------------------------
+    // 10. IsMemberOf
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "TRUE if any element/row/col of A exists in B", Category = "ExcelDNA Utilities")]
+    public static bool IsMemberOf(object[,] arrayA, object[,] arrayB)
     {
-        try
+        int aRows = arrayA.GetLength(0), aCols = arrayA.GetLength(1);
+        int bRows = arrayB.GetLength(0), bCols = arrayB.GetLength(1);
+        bool aSingle = (aRows == 1 && aCols == 1);
+        bool bSingle = (bRows == 1 && bCols == 1);
+        if (aSingle || bSingle)
         {
-            // Determine the maximum number of columns needed
-            int maxColumns = 1;
-            foreach (var item in inputStrings)
-            {
-                string str = item as string;
-                if (str != null)
-                {
-                    int count = str.Split(
-                        new string[] { delimiter },
-                        StringSplitOptions.None
-                    ).Length;
-                    maxColumns = Math.Max(maxColumns, count);
-                }
-                else if (item == null || item is ExcelDna.Integration.ExcelEmpty)
-                {
-                    maxColumns = Math.Max(maxColumns, 1); // Handle null or empty as single column
-                }
-                else if (item is ExcelDna.Integration.ExcelError)
-                {
-                    maxColumns = Math.Max(maxColumns, 1); // Handle errors as single column
-                }
-            }
-
-            // Create the output array
-            object[,] result = new object[inputStrings.Length, maxColumns];
-
-            for (int i = 0; i < inputStrings.Length; i++)
-            {
-                string str = inputStrings[i] as string;
-                if (str != null)
-                {
-                    string[] parts = str.Split(new string[] { delimiter }, StringSplitOptions.None);
-                    for (int j = 0; j < parts.Length; j++)
-                    {
-                        result[i, j] = parts[j];
-                    }
-
-                    // Fill remaining columns with empty strings if needed
-                    for (int j = parts.Length; j < maxColumns; j++)
-                    {
-                        result[i, j] = "";
-                    }
-                }
-                else if (
-                    inputStrings[i] == null
-                    || inputStrings[i] is ExcelDna.Integration.ExcelEmpty
-                )
-                {
-                    result[i, 0] = ""; // First column gets empty string
-                    for (int j = 1; j < maxColumns; j++)
-                    {
-                        result[i, j] = "";
-                    }
-                }
-                else if (inputStrings[i] is ExcelDna.Integration.ExcelError)
-                {
-                    result[i, 0] = inputStrings[i]; // First column gets the error
-                    for (int j = 1; j < maxColumns; j++)
-                    {
-                        result[i, j] = "";
-                    }
-                }
-                else
-                {
-                    // Handle other unexpected types (shouldn't normally happen)
-                    result[i, 0] = inputStrings[i].ToString();
-                    for (int j = 1; j < maxColumns; j++)
-                    {
-                        result[i, j] = "";
-                    }
-                }
-            }
-
-            return result;
-        }
-        catch (Exception ex)
-        {
-            return new object[,]
-            {
-                { ExcelError.ExcelErrorValue }
-            };
-        }
-    }
-
-    //
-    // IsMemberOf UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function checks if any element/row/column from the first array exists in the second array.
-    // It returns TRUE if a match is found, otherwise FALSE.
-    // It handles both single-element arrays (1x1) and multi-dimensional arrays.
-    // It also handles Excel-specific types like ExcelEmpty and ExcelError.
-
-    [ExcelFunction(
-        Description = "Checks if any element/row/column from first array exists in second array"
-    )]
-    public static bool IsMemberOf(
-        [ExcelArgument(Description = "First array (will be searched in second array)")]
-            object[,] arrayA,
-        [ExcelArgument(Description = "Second array (will be searched against)")] object[,] arrayB
-    )
-    {
-        try
-        {
-            // Get dimensions of both arrays
-            int aRows = arrayA.GetLength(0);
-            int aCols = arrayA.GetLength(1);
-            int bRows = arrayB.GetLength(0);
-            int bCols = arrayB.GetLength(1);
-
-            // Handle single-element arrays (1x1)
-            bool aIsSingle = (aRows == 1 && aCols == 1);
-            bool bIsSingle = (bRows == 1 && bCols == 1);
-
-            // Special case: if either array is single-element, compare as values
-            if (aIsSingle || bIsSingle)
-            {
-                object aValue = arrayA[0, 0];
-                if (bIsSingle)
-                {
-                    return AreEqual(aValue, arrayB[0, 0]);
-                }
-                else
-                {
-                    // Search single value in arrayB
-                    for (int i = 0; i < bRows; i++)
-                    {
-                        for (int j = 0; j < bCols; j++)
-                        {
-                            if (AreEqual(aValue, arrayB[i, j]))
-                            {
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                }
-            }
-
-            // Determine if we're comparing rows or columns
-            bool compareRows = (aCols == bCols); // If column counts match, compare rows
-            bool compareCols = (aRows == bRows); // If row counts match, compare columns
-
-            if (!compareRows && !compareCols)
-            {
-                // Arrays have incompatible dimensions for comparison
-                return false;
-            }
-
-            if (compareRows)
-            {
-                // Compare rows of A against rows of B
-                for (int aRow = 0; aRow < aRows; aRow++)
-                {
-                    for (int bRow = 0; bRow < bRows; bRow++)
-                    {
-                        bool match = true;
-                        for (int col = 0; col < aCols; col++)
-                        {
-                            if (!AreEqual(arrayA[aRow, col], arrayB[bRow, col]))
-                            {
-                                match = false;
-                                break;
-                            }
-                        }
-                        if (match)
-                            return true;
-                    }
-                }
-            }
-
-            if (compareCols)
-            {
-                // Compare columns of A against columns of B
-                for (int aCol = 0; aCol < aCols; aCol++)
-                {
-                    for (int bCol = 0; bCol < bCols; bCol++)
-                    {
-                        bool match = true;
-                        for (int row = 0; row < aRows; row++)
-                        {
-                            if (!AreEqual(arrayA[row, aCol], arrayB[row, bCol]))
-                            {
-                                match = false;
-                                break;
-                            }
-                        }
-                        if (match)
-                            return true;
-                    }
-                }
-            }
-
+            object aVal = arrayA[0, 0];
+            if (bSingle) return AreEqual(aVal, arrayB[0, 0]);
+            for (int i = 0; i < bRows; i++)
+                for (int j = 0; j < bCols; j++) if (AreEqual(aVal, arrayB[i, j])) return true;
             return false;
         }
-        catch (Exception)
+
+        bool compareRows = (aCols == bCols);
+        bool compareCols = (aRows == bRows);
+        if (!compareRows && !compareCols) return false;
+
+        if (compareRows)
         {
-            return false;
+            for (int ar = 0; ar < aRows; ar++)
+            {
+                for (int br = 0; br < bRows; br++)
+                {
+                    bool match = true;
+                    for (int c = 0; c < aCols && match; c++) if (!AreEqual(arrayA[ar, c], arrayB[br, c])) match = false;
+                    if (match) return true;
+                }
+            }
         }
+        if (compareCols)
+        {
+            for (int ac = 0; ac < aCols; ac++)
+            {
+                for (int bc = 0; bc < bCols; bc++)
+                {
+                    bool match = true;
+                    for (int r = 0; r < aRows && match; r++) if (!AreEqual(arrayA[r, ac], arrayB[r, bc])) match = false;
+                    if (match) return true;
+                }
+            }
+        }
+        return false;
     }
 
-    [ExcelFunction(
-     Name = "GetThreads",
-     Description = "Gets Excel's current multithreading calculation thread count",
-     Category = "ExcelDNA Utilities",
-     IsVolatile = true
-    )]
+    //--------------------------------------------------------------------
+    // 11. GetThreads & SetThreads
+    //--------------------------------------------------------------------
+    [ExcelFunction(Name = "GetThreads", Description = "Returns multithreading settings", Category = "ExcelDNA Utilities")]
     public static object GetThreads()
     {
+        MaybeVolatile();
         try
         {
-            // Verify Excel version supports multithreading (Excel 2007+)
-            var app = (Excel.Application)ExcelDnaUtil.Application;
-            if (new Version(app.Version) < new Version("12.0"))
-                return "Excel 2007+ required";
-
-            // Access multithreading properties
-            var mtc = app.MultiThreadedCalculation;
-            // int maxThreads = Environment.ProcessorCount;
-            int maxThreads = 64;
-
-            return new object[,]
-            {
-            { "Current Thread Count", mtc.ThreadCount },
-            { "Max Available", maxThreads },
-            { "Mode Enabled", mtc.Enabled }
-            };
+            Excel.Application app = (Excel.Application)ExcelDnaUtil.Application;
+            if (new Version(app.Version) < new Version("12.0")) return "Excel 2007+ required";
+            Excel.MultiThreadedCalculation mtc = app.MultiThreadedCalculation;
+            int max = 64;
+            return new object[,] { { "Current Thread Count", mtc.ThreadCount }, { "Max Available", max }, { "Mode Enabled", mtc.Enabled } };
         }
-        catch (System.Runtime.InteropServices.COMException)
-        {
-            return ExcelError.ExcelErrorNA; // #N/A if Excel not available
-        }
-        catch (Exception)
-        {
-            return ExcelError.ExcelErrorValue; // #VALUE! for other errors
-        }
+        catch { return ExcelError.ExcelErrorValue; }
     }
 
-    //
-    // SetThreads UDF
-    // ------------------------------------------------------------------------------------
-    // This function sets Excel's multithreading calculation settings.
-    // It takes two parameters: threadCount (number of threads to use) and enable (boolean to enable/disable multithreading).
-    // The function validates the threadCount and enables/disables multithreading accordingly.
-    // It also handles exceptions and returns an error message if an exception occurs.
-    // The function uses a lock to ensure thread safety when accessing shared resources.
-    // The function caches the last thread count and enabled state to avoid redundant calls.
-    // The function uses ExcelAsyncUtil to queue the operation as a macro.
-    // The function also checks if the settings are the same as the last call to avoid unnecessary updates.
-    // The function returns a confirmation message indicating the status of the multithreading settings.
-
-    private static int _lastThreadCount = -2; // Initialize with invalid value
+    private static int _lastThreadCount = -2;
     private static bool _lastThreadEnabled;
     private static readonly object _threadLock = new object();
 
-    [ExcelFunction(
-        Name = "SetThreads",
-        Description = "Configures Excel's multithreading settings",
-        Category = "ExcelDNA Utilities",
-        IsMacroType = true
-    )]
-    public static object SetThreads(
-        [ExcelArgument(Description = "Number of threads (0=Auto, -1=Max)")]
-    int threadCount,
-        [ExcelArgument(Description = "Enable multithreading")]
-    bool enable = true)
+    [ExcelFunction(Name = "SetThreads", Description = "Configures multithreading", Category = "ExcelDNA Utilities", IsMacroType = true)]
+    public static object SetThreads(int threadCount, bool enable)
     {
         lock (_threadLock)
         {
             try
             {
-                // Check if settings are the same as last call
-                if (_lastThreadCount == threadCount && _lastThreadEnabled == enable)
+                if (_lastThreadCount == threadCount && _lastThreadEnabled == enable) return "Cached";
+                ExcelAsyncUtil.QueueAsMacro(delegate
                 {
-                    return "Using cached thread settings";
-                }
-
-                ExcelAsyncUtil.QueueAsMacro(() =>
-                {
-                    var app = (Excel.Application)ExcelDnaUtil.Application;
-
-                    // Validate Excel version
-                    if (new Version(app.Version) < new Version("12.0"))
-                    {
-                        return;
-                    }
-
-                    var mtc = app.MultiThreadedCalculation;
-                    // int maxThreads = Environment.ProcessorCount;
-                    int maxThreads = 64;
-                    int newCount;
-
-                    // Determine thread count
-                    if (threadCount == -1)
-                    {
-                        newCount = maxThreads; // Use all processors
-                    }
-                    else if (threadCount == 0)
-                    {
-                        newCount = maxThreads / 2; // Automatic (half of max)
-                    }
-                    else
-                    {
-                        newCount = Math.Min(threadCount, maxThreads);
-                    }
-
-                    // Only update if settings actually changed
+                    Excel.Application app = (Excel.Application)ExcelDnaUtil.Application;
+                    if (new Version(app.Version) < new Version("12.0")) return;
+                    Excel.MultiThreadedCalculation mtc = app.MultiThreadedCalculation;
+                    int max = 64;
+                    int newCount = (threadCount == -1) ? max : (threadCount == 0 ? max / 2 : (threadCount > max ? max : threadCount));
                     if (mtc.ThreadCount != newCount || mtc.Enabled != enable)
                     {
                         mtc.ThreadCount = newCount;
                         mtc.Enabled = enable;
                         _lastThreadCount = threadCount;
                         _lastThreadEnabled = enable;
-
-                        if (enable)
-                        {
-                            app.CalculateFullRebuild();
-                        }
+                        if (enable) app.CalculateFullRebuild();
                     }
                 });
-
                 return "Thread settings updated";
             }
-            catch (System.Runtime.InteropServices.COMException)
-            {
-                return ExcelError.ExcelErrorNA;
-            }
-            catch (Exception ex)
-            {
-                return "Error: " + ex.Message;
-            }
+            catch { return ExcelError.ExcelErrorValue; }
         }
     }
 
-    // Helper method to compare Excel values including handling of different types
+    //--------------------------------------------------------------------
+    // 12. HashArray
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "Returns a stable hash for an array (order‑independent)", Category = "ExcelDNA Utilities")]
+    public static object HashArray(object[,] inputArray, object hashLengthObj)
+    {
+        int hashLen = 8;
+        if (hashLengthObj is double) hashLen = (int)(double)hashLengthObj;
+        else if (hashLengthObj is int) hashLen = (int)hashLengthObj;
+        else if (hashLengthObj is string)
+        {
+            int parsed; if (int.TryParse((string)hashLengthObj, out parsed)) hashLen = parsed;
+        }
+        if (hashLen < 4) hashLen = 4; if (hashLen > 32) hashLen = 32;
+
+        List<string> elems = new List<string>();
+        int rows = inputArray.GetLength(0), cols = inputArray.GetLength(1);
+        for (int r = 0; r < rows; r++)
+            for (int c = 0; c < cols; c++)
+            {
+                object el = inputArray[r, c];
+                if (el == null || el is ExcelEmpty) continue;
+                if (el is ExcelError) elems.Add("ERROR:" + el.ToString());
+                else if (el is double) elems.Add(((double)el).ToString("G17"));
+                else elems.Add(el.ToString());
+            }
+        elems.Sort();
+        string combined = string.Join("|", elems.ToArray());
+        return GenerateHash(combined, hashLen);
+    }
+
+    //--------------------------------------------------------------------
+    // 13. isLocalIP
+    //--------------------------------------------------------------------
+    [ExcelFunction(Description = "TRUE if IP is local/private", Category = "ExcelDNA Utilities")]
+    public static object isLocalIP(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return ExcelError.ExcelErrorNA;
+        try
+        {
+            string ipOnly = input;
+            if (ipOnly.StartsWith("[") && ipOnly.IndexOf(']') > 0)
+            {
+                int end = ipOnly.IndexOf(']');
+                ipOnly = ipOnly.Substring(1, end - 1);
+            }
+            int colon = ipOnly.LastIndexOf(':');
+            if (colon > -1 && ipOnly.IndexOf(':') == colon) ipOnly = ipOnly.Substring(0, colon);
+            System.Net.IPAddress ip;
+            if (!System.Net.IPAddress.TryParse(ipOnly, out ip)) return ExcelError.ExcelErrorNA;
+
+            byte[] b = ip.GetAddressBytes();
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                if (b[0] == 10) return true;
+                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+                if (b[0] == 192 && b[1] == 168) return true;
+                if (b[0] == 127) return true;
+                if (b[0] == 169 && b[1] == 254) return true;
+                return false;
+            }
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                if (System.Net.IPAddress.IsLoopback(ip)) return true;
+                if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal) return true;
+                if ((ip.GetAddressBytes()[0] & 0xFE) == 0xFC) return true; // fc00::/7
+                return false;
+            }
+            return false;
+        }
+        catch { return ExcelError.ExcelErrorNA; }
+    }
+
+    //--------------------------------------------------------------------
+    // 14. ARRAY_SUBSTR
+    //--------------------------------------------------------------------
+    [ExcelFunction(Name = "ARRAY_SUBSTR", Description = "Array subtraction (preserves shape)", Category = "ExcelDNA Utilities")]
+    public static object[,] ArraySubstr(object[,] arrayA, object[,] arrayB)
+    {
+        HashSet<string> remove = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int br = arrayB.GetLength(0), bc = arrayB.GetLength(1);
+        for (int i = 0; i < br; i++)
+            for (int j = 0; j < bc; j++)
+            {
+                object v = arrayB[i, j];
+                if (v != null && !(v is ExcelEmpty) && !(v is ExcelError)) remove.Add(v.ToString());
+            }
+        int ar = arrayA.GetLength(0), ac = arrayA.GetLength(1);
+        bool isRow = (ar == 1 && ac > 1);
+        List<object> kept = new List<object>();
+        for (int i = 0; i < ar; i++)
+            for (int j = 0; j < ac; j++)
+            {
+                object v = arrayA[i, j];
+                if (v == null || v is ExcelEmpty || v is ExcelError) continue;
+                if (!remove.Contains(v.ToString())) kept.Add(v);
+            }
+        if (isRow)
+        {
+            object[,] res = new object[1, kept.Count];
+            for (int i = 0; i < kept.Count; i++) res[0, i] = kept[i];
+            return res;
+        }
+        object[,] resCol = new object[kept.Count, 1];
+        for (int i = 0; i < kept.Count; i++) resCol[i, 0] = kept[i];
+        return resCol;
+    }
+
+    //--------------------------------------------------------------------
+    // Utility helpers
+    //--------------------------------------------------------------------
     private static bool AreEqual(object a, object b)
     {
-        if (a == null && b == null)
-            return true;
-        if (a == null || b == null)
-            return false;
-
-        // Handle Excel-specific types
-        if (a is ExcelDna.Integration.ExcelEmpty && b is ExcelDna.Integration.ExcelEmpty)
-            return true;
-        if (a is ExcelDna.Integration.ExcelEmpty || b is ExcelDna.Integration.ExcelEmpty)
-            return false;
-        if (a is ExcelDna.Integration.ExcelError || b is ExcelDna.Integration.ExcelError)
-            return false;
-
-        // Convert both to strings for comparison
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        if (a is ExcelEmpty || b is ExcelEmpty) return false;
+        if (a is ExcelError || b is ExcelError) return false;
         return a.ToString() == b.ToString();
     }
 
-    // HashArray UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function computes a consistent hash value for an array of values.
-    // It takes an array of objects and an optional hash length parameter.
-    // The function converts all elements to strings, sorts them, and combines them into a single string.
-    // It then generates a hash of the combined string using SHA256 and returns the hash value.
-    // The hash length can be specified (4-32 characters), and defaults to 8 if not provided.
-    // The function handles different types of input, including strings, numbers, booleans, and errors.
-    [ExcelFunction(
-        Description = "Computes a consistent hash value for an array (order-independent)",
-        IsVolatile = false
-    )]
-    public static object HashArray(
-        [ExcelArgument(Description = "Input array (can be horizontal or vertical)")] object[,] inputArray,
-        [ExcelArgument(Description = "Optional: Length of hash (4-32 characters, default=8)")] object hashLengthObj
-    )
+    private static string GenerateHash(string txt, int len)
     {
-        try
+        using (var sha = System.Security.Cryptography.SHA256.Create())
         {
-            // Default hash length
-            int hashLength = 8;
-
-            // Process optional hash length parameter
-            if (hashLengthObj != null && !(hashLengthObj is ExcelMissing) && !(hashLengthObj is ExcelEmpty))
-            {
-                if (hashLengthObj is double)
-                {
-                    hashLength = (int)(double)hashLengthObj;
-                }
-                else if (hashLengthObj is int)
-                {
-                    hashLength = (int)hashLengthObj;
-                }
-                else if (hashLengthObj is string)
-                {
-                    if (!int.TryParse((string)hashLengthObj, out hashLength))
-                    {
-                        hashLength = 8;
-                    }
-                }
-
-                // Validate hash length
-                if (hashLength < 4) hashLength = 4;
-                if (hashLength > 32) hashLength = 32;
-            }
-
-            // Convert all elements to strings and collect them in a list
-            var elements = new List<string>();
-            int rows = inputArray.GetLength(0);
-            int cols = inputArray.GetLength(1);
-
-            for (int i = 0; i < rows; i++)
-            {
-                for (int j = 0; j < cols; j++)
-                {
-                    object element = inputArray[i, j];
-                    string elementStr = string.Empty;
-
-                    if (element is double)
-                    {
-                        elementStr = ((double)element).ToString("G17");
-                    }
-                    else if (element is string)
-                    {
-                        elementStr = (string)element;
-                    }
-                    else if (element is bool)
-                    {
-                        elementStr = ((bool)element) ? "TRUE" : "FALSE";
-                    }
-                    else if (element is ExcelError)
-                    {
-                        elementStr = "ERROR:" + element.ToString();
-                    }
-                    else if (element == null || element is ExcelEmpty)
-                    {
-                        elementStr = string.Empty;
-                    }
-                    else
-                    {
-                        elementStr = element.ToString();
-                    }
-
-                    if (!string.IsNullOrEmpty(elementStr))
-                    {
-                        elements.Add(elementStr);
-                    }
-                }
-            }
-
-            // If no elements, return hash of empty string
-            if (elements.Count == 0)
-            {
-                return GenerateHash(string.Empty, hashLength);
-            }
-
-            // Sort elements to make hash order-independent
-            elements.Sort();
-
-            // Combine all elements with a delimiter
-            string combined = string.Join("|", elements);
-
-            // Generate hash of the requested length
-            return GenerateHash(combined, hashLength);
-        }
-        catch
-        {
-            return ExcelError.ExcelErrorValue;
+            byte[] hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(txt ?? string.Empty));
+            string b64 = Convert.ToBase64String(hash).Replace("+", "0").Replace("/", "1").Replace("=", "2");
+            if (len < 4) len = 4; if (len > 32) len = 32;
+            return b64.Substring(0, len);
         }
     }
-
-    // Helper method to generate a hash of a string
-    private static string GenerateHash(string input, int length)
-    {
-        // Use SHA256 to generate a hash of arbitrary length
-        using (System.Security.Cryptography.SHA256 sha256 = System.Security.Cryptography.SHA256.Create())
-        {
-            byte[] inputBytes = System.Text.Encoding.UTF8.GetBytes(input);
-            byte[] hashBytes = sha256.ComputeHash(inputBytes);
-
-            // Convert to base64 and take the requested length
-            string base64Hash = Convert.ToBase64String(hashBytes)
-                .Replace("+", "0")  // Remove characters that might cause issues
-                .Replace("/", "1")
-                .Replace("=", "2");
-
-            // Take the requested length (minimum 4, maximum 32)
-            return base64Hash.Substring(0, Math.Min(Math.Max(length, 4), 32));
-        }
-    }
-
-    // isLocalIP UDF
-    // ------------------------------------------------------------------------------------
-    //
-    // This function checks if an IP address is local/private or routable.
-    // It takes an IP address (optionally with port) as input and returns TRUE if local/private,
-    // FALSE if routable, and #N/A if the input is invalid.
-    [ExcelFunction(Description = "Returns TRUE if an IP address is local/private, FALSE if routable, #N/A if invalid.")]
-    public static object isLocalIP([ExcelArgument(Description = "IP address (optionally with port)")] string input)
-    {
-        if (string.IsNullOrWhiteSpace(input))
-            return ExcelError.ExcelErrorNA;
-
-        try
-        {
-            // Remove port if present
-            int colonIndex = input.LastIndexOf(':');
-            string ipOnly = colonIndex > -1 && input.IndexOf(':') == colonIndex
-                ? input.Substring(0, colonIndex)
-                : input;
-
-            // Support for IPv6 with port syntax like [::1]:1234
-            if (ipOnly.StartsWith("[") && ipOnly.Contains("]"))
-            {
-                int end = ipOnly.IndexOf("]");
-                ipOnly = ipOnly.Substring(1, end - 1);
-            }
-
-            System.Net.IPAddress ip;
-            if (!System.Net.IPAddress.TryParse(ipOnly, out ip))
-                return ExcelError.ExcelErrorNA;
-
-            byte[] bytes = ip.GetAddressBytes();
-
-            // IPv4 checks
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-            {
-                if (bytes[0] == 10)
-                    return true; // 10.0.0.0/8
-                if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
-                    return true; // 172.16.0.0/12
-                if (bytes[0] == 192 && bytes[1] == 168)
-                    return true; // 192.168.0.0/16
-                if (bytes[0] == 127)
-                    return true; // Loopback 127.0.0.0/8
-                if (bytes[0] == 169 && bytes[1] == 254)
-                    return true; // Link-local 169.254.0.0/16
-
-                return false;
-            }
-
-            // IPv6 checks
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
-            {
-                if (System.Net.IPAddress.IsLoopback(ip))
-                    return true;
-
-                if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal)
-                    return true;
-
-                // Unique local address fc00::/7
-                byte first = ip.GetAddressBytes()[0];
-                if ((first & 0xFE) == 0xFC)
-                    return true;
-
-                return false;
-            }
-
-            return false;
-        }
-        catch
-        {
-            return ExcelError.ExcelErrorNA;
-        }
-
-    }
-
-    [ExcelFunction(
-    Name = "ARRAY_SUBSTR",
-    Description = "Removes elements from the first array that also appear in the second array, preserving the first array's shape",
-    Category = "ExcelDNA Utilities",
-    IsVolatile = false)]
-    public static object[,] ArraySubstr(
-    [ExcelArgument(Description = "Array to subtract from (will be filtered)")] object[,] arrayA,
-    [ExcelArgument(Description = "Array of values to remove")] object[,] arrayB)
-    {
-        try
-        {
-            // Build lookup set from arrayB
-            HashSet<string> removalSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            int rowsB = arrayB.GetLength(0);
-            int colsB = arrayB.GetLength(1);
-
-            for (int i = 0; i < rowsB; i++)
-            {
-                for (int j = 0; j < colsB; j++)
-                {
-                    object val = arrayB[i, j];
-                    if (val == null || val is ExcelEmpty || val is ExcelError)
-                        continue;
-                    removalSet.Add(val.ToString());
-                }
-            }
-
-            // Determine if arrayA is a row or column
-            int rowsA = arrayA.GetLength(0);
-            int colsA = arrayA.GetLength(1);
-            bool isRow = rowsA == 1 && colsA > 1;
-            bool isCol = colsA == 1 && rowsA > 1;
-
-            // Filter arrayA
-            List<object> filtered = new List<object>();
-            for (int i = 0; i < rowsA; i++)
-            {
-                for (int j = 0; j < colsA; j++)
-                {
-                    object val = arrayA[i, j];
-                    if (val == null || val is ExcelEmpty || val is ExcelError)
-                        continue;
-
-                    string valStr = val.ToString();
-                    if (!removalSet.Contains(valStr))
-                    {
-                        filtered.Add(val);
-                    }
-                }
-            }
-
-            // Prepare result in same orientation as arrayA
-            if (isRow)
-            {
-                object[,] result = new object[1, filtered.Count];
-                for (int i = 0; i < filtered.Count; i++)
-                    result[0, i] = filtered[i];
-                return result;
-            }
-            else // treat as column by default
-            {
-                object[,] result = new object[filtered.Count, 1];
-                for (int i = 0; i < filtered.Count; i++)
-                    result[i, 0] = filtered[i];
-                return result;
-            }
-        }
-        catch
-        {
-            return new object[,] { { ExcelError.ExcelErrorValue } };
-        }
-    }
-
 }
