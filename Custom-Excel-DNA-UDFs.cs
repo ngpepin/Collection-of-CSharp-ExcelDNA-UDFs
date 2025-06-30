@@ -109,7 +109,9 @@
  *    - Usage: =ISLOCALIP(ipAddress_string)
  *    - Returns: TRUE if local IP, FALSE otherwise or #N/A if invalid input
  *
- * 20. ARRAY_SUBSTR - complete documentation
+ * 20. ARRAYSUBTRACT - complete documentation
+ *
+ * 21. EXTRACTSUBSTR - complete documentation
  *
  * Notes:
  * - Functions marked as volatile recalculate when any cell changes
@@ -165,7 +167,7 @@
  *  * It persists only for the current Excel session; store `=SetVolatility(FALSE)` in a cell
  *    or run it from VBA/Auto-open if you want it off by default for a workbook.
  *
-*/  
+*/
 
 using System;
 using System.Collections.Generic;
@@ -179,8 +181,8 @@ public class C
     // Version info
     //--------------------------------------------------------------------
     private const string VERSION_MAJOR = "3";
-    private const string VERSION_MINOR = "3";
-    private const string VERSION_PATCH = "0";   
+    private const string VERSION_MINOR = "4";
+    private const string VERSION_PATCH = "0";
     private const string CurrentVersion = VERSION_MAJOR + "." + VERSION_MINOR + "." + VERSION_PATCH;
     private static string _targetVersion = CurrentVersion;
 
@@ -676,10 +678,10 @@ public class C
     }
 
     //--------------------------------------------------------------------
-    // 14. ARRAY_SUBSTR
+    // 14. ARRAYSUBTRACT
     //--------------------------------------------------------------------
-    [ExcelFunction(Name = "ARRAY_SUBSTR", Description = "Array subtraction (preserves shape)", Category = "ExcelDNA Utilities")]
-    public static object[,] ArraySubstr(object[,] arrayA, object[,] arrayB)
+    [ExcelFunction(Name = "ARRAYSUBTRACT", Description = "Array subtraction (preserves shape)", Category = "ExcelDNA Utilities")]
+    public static object[,] ArraySubtract(object[,] arrayA, object[,] arrayB)
     {
         HashSet<string> remove = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int br = arrayB.GetLength(0), bc = arrayB.GetLength(1);
@@ -708,6 +710,53 @@ public class C
         object[,] resCol = new object[kept.Count, 1];
         for (int i = 0; i < kept.Count; i++) resCol[i, 0] = kept[i];
         return resCol;
+    }
+
+    //--------------------------------------------------------------------
+    // 15. EXTRACTSUBSTR
+    //--------------------------------------------------------------------
+    [ExcelFunction(Name = "EXTRACTSUBSTR", Description = "Extracts substring between start and end markers", Category = "ExcelDNA Utilities")]
+    public static object ExtractSubstr(
+    [ExcelArgument(Description = "String to extract from")] string inputString,
+    [ExcelArgument(Description = "Text that precedes the substring to extract")] string startMarker,
+    [ExcelArgument(Description = "Text that marks the end of substring (not included in result)")] object endMarkerObj)
+    {
+        try
+        {
+            // Validate required parameters
+            if (string.IsNullOrEmpty(inputString) || string.IsNullOrEmpty(startMarker))
+                return ExcelError.ExcelErrorNA;
+
+            string endMarker = (endMarkerObj is ExcelMissing || endMarkerObj is ExcelEmpty) ? null : endMarkerObj.ToString();
+
+            // Find start position
+            int startPos = inputString.IndexOf(startMarker, StringComparison.Ordinal);
+            if (startPos == -1)
+                return ExcelError.ExcelErrorNA;
+
+            // Calculate where to start extracting (after the start marker)
+            int extractStart = startPos + startMarker.Length;
+
+            // Case 1: No end marker - return everything after start marker
+            if (string.IsNullOrEmpty(endMarker))
+            {
+                if (extractStart >= inputString.Length)
+                    return string.Empty;
+                return inputString.Substring(extractStart);
+            }
+
+            // Case 2: With end marker - find end position
+            int endPos = inputString.IndexOf(endMarker, extractStart, StringComparison.Ordinal);
+            if (endPos == -1)
+                return ExcelError.ExcelErrorNA;
+
+            // Extract substring between markers
+            return inputString.Substring(extractStart, endPos - extractStart);
+        }
+        catch
+        {
+            return ExcelError.ExcelErrorNA;
+        }
     }
 
     //--------------------------------------------------------------------
