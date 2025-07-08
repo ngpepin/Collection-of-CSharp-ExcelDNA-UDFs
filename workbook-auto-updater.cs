@@ -15,7 +15,7 @@ public class C
             _timer.Stop();
             _timer.Dispose();
             _timer = null;
-            Msg("Auto-refresh stopped.");
+            statusMsg("Auto-refresh stopped.");
             return;
         }
 
@@ -28,7 +28,7 @@ public class C
         _timer.AutoReset = true;
         _timer.Start();
 
-        Msg("Auto-refresh started: workbook will refresh every 10 minutes.");
+        statusMsg("Auto-refresh started: workbook will refresh every 10 minutes.");
     }
     
     [ExcelDna.Integration.ExcelCommand()]     
@@ -39,7 +39,7 @@ public class C
             _timer.Stop();
             _timer.Dispose();
             _timer = null;
-            Msg("Auto-refresh stopped.");
+            statusMsg("Auto-refresh stopped.");
             return;
         }
     }
@@ -67,7 +67,7 @@ public class C
         });
     }
 
-    static void Msg(string message)
+    static void statusMsg(string message)
     {
         var app = (Excel.Application)ExcelDnaUtil.Application;
         app.StatusBar = message;
