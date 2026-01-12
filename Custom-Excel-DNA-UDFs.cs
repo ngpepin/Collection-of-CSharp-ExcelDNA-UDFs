@@ -789,14 +789,12 @@ public class C
             return new object[0, 0];
         }
 
-        List<SubstringMatch> matches = GetMaximalCommonSubstrings(s1, s2);
-        HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+        List<SubstringMatch> matches = GetCommonRunsFromLcs(s1, s2);
         List<string> results = new List<string>();
 
-        foreach (var match in matches.OrderBy(m => m.Start1).ThenBy(m => m.Start2))
+        foreach (var match in matches)
         {
-            if (match.Length < minLength) continue;
-            if (seen.Add(match.Value)) results.Add(match.Value);
+            if (match.Length >= minLength) results.Add(match.Value);
         }
 
         return BuildColumnArray(results);
@@ -821,8 +819,7 @@ public class C
             return (s1.Length >= minLength) ? BuildColumnArray(new List<string> { s1 }) : new object[0, 0];
         }
 
-        List<SubstringMatch> matches = GetMaximalCommonSubstrings(s1, s2);
-        List<SubstringMatch> selected = SelectNonOverlappingMatches(matches);
+        List<SubstringMatch> selected = GetCommonRunsFromLcs(s1, s2);
 
         List<string> diffs = new List<string>();
         int current = 0;
@@ -862,63 +859,92 @@ public class C
         public string Value;
     }
 
-    private static List<SubstringMatch> GetMaximalCommonSubstrings(string s1, string s2)
+    private static List<SubstringMatch> GetCommonRunsFromLcs(string s1, string s2)
     {
         int len1 = s1.Length;
         int len2 = s2.Length;
-        int[,] dp = new int[len1, len2];
-        List<SubstringMatch> matches = new List<SubstringMatch>();
+        int[,] dp = new int[len1 + 1, len2 + 1];
 
-        for (int i = 0; i < len1; i++)
+        for (int i = 1; i <= len1; i++)
         {
-            for (int j = 0; j < len2; j++)
+            for (int j = 1; j <= len2; j++)
             {
-                if (s1[i] == s2[j])
+                if (s1[i - 1] == s2[j - 1])
                 {
-                    int length = (i > 0 && j > 0) ? dp[i - 1, j - 1] + 1 : 1;
-                    dp[i, j] = length;
-
-                    bool canExtendRight = (i + 1 < len1 && j + 1 < len2 && s1[i + 1] == s2[j + 1]);
-                    if (!canExtendRight)
-                    {
-                        int start1 = i - length + 1;
-                        int start2 = j - length + 1;
-                        matches.Add(new SubstringMatch
-                        {
-                            Start1 = start1,
-                            Start2 = start2,
-                            Length = length,
-                            Value = s1.Substring(start1, length)
-                        });
-                    }
+                    dp[i, j] = dp[i - 1, j - 1] + 1;
                 }
                 else
                 {
-                    dp[i, j] = 0;
+                    dp[i, j] = dp[i - 1, j] >= dp[i, j - 1] ? dp[i - 1, j] : dp[i, j - 1];
                 }
             }
         }
 
-        return matches;
-    }
-
-    private static List<SubstringMatch> SelectNonOverlappingMatches(List<SubstringMatch> matches)
-    {
-        List<SubstringMatch> selected = new List<SubstringMatch>();
-        int lastEnd1 = -1;
-        int lastEnd2 = -1;
-
-        foreach (var match in matches.OrderBy(m => m.Start1).ThenBy(m => m.Start2).ThenByDescending(m => m.Length))
+        List<Tuple<int, int>> matches = new List<Tuple<int, int>>();
+        int x = len1;
+        int y = len2;
+        while (x > 0 && y > 0)
         {
-            if (match.Start1 > lastEnd1 && match.Start2 > lastEnd2)
+            if (s1[x - 1] == s2[y - 1])
             {
-                selected.Add(match);
-                lastEnd1 = match.Start1 + match.Length - 1;
-                lastEnd2 = match.Start2 + match.Length - 1;
+                matches.Add(new Tuple<int, int>(x - 1, y - 1));
+                x--;
+                y--;
+            }
+            else if (dp[x - 1, y] >= dp[x, y - 1])
+            {
+                x--;
+            }
+            else
+            {
+                y--;
             }
         }
 
-        return selected;
+        matches.Reverse();
+
+        List<SubstringMatch> runs = new List<SubstringMatch>();
+        if (matches.Count == 0) return runs;
+
+        int runStart1 = matches[0].Item1;
+        int runStart2 = matches[0].Item2;
+        int runLength = 1;
+
+        for (int i = 1; i < matches.Count; i++)
+        {
+            int prev1 = matches[i - 1].Item1;
+            int prev2 = matches[i - 1].Item2;
+            int curr1 = matches[i].Item1;
+            int curr2 = matches[i].Item2;
+
+            if (curr1 == prev1 + 1 && curr2 == prev2 + 1)
+            {
+                runLength++;
+            }
+            else
+            {
+                runs.Add(new SubstringMatch
+                {
+                    Start1 = runStart1,
+                    Start2 = runStart2,
+                    Length = runLength,
+                    Value = s1.Substring(runStart1, runLength)
+                });
+                runStart1 = curr1;
+                runStart2 = curr2;
+                runLength = 1;
+            }
+        }
+
+        runs.Add(new SubstringMatch
+        {
+            Start1 = runStart1,
+            Start2 = runStart2,
+            Length = runLength,
+            Value = s1.Substring(runStart1, runLength)
+        });
+
+        return runs;
     }
 
     private static object[,] BuildColumnArray(List<string> items)
