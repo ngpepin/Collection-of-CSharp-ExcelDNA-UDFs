@@ -789,7 +789,7 @@ public class C
             return new object[0, 0];
         }
 
-        List<SubstringMatch> matches = GetCommonRunsFromLcs(s1, s2);
+        List<SubstringMatch> matches = GetCommonSubstringsByLongestMatch(s1, s2);
         List<string> results = new List<string>();
 
         foreach (var match in matches)
@@ -819,7 +819,9 @@ public class C
             return (s1.Length >= minLength) ? BuildColumnArray(new List<string> { s1 }) : new object[0, 0];
         }
 
-        List<SubstringMatch> selected = GetCommonRunsFromLcs(s1, s2);
+        List<SubstringMatch> selected = GetCommonSubstringsByLongestMatch(s1, s2)
+            .OrderBy(m => m.Start1)
+            .ToList();
 
         List<string> diffs = new List<string>();
         int current = 0;
@@ -859,11 +861,23 @@ public class C
         public string Value;
     }
 
-    private static List<SubstringMatch> GetCommonRunsFromLcs(string s1, string s2)
+    private static List<SubstringMatch> GetCommonSubstringsByLongestMatch(string s1, string s2)
     {
+        List<SubstringMatch> matches = new List<SubstringMatch>();
+        AddLongestMatchRuns(s1, s2, 0, 0, matches);
+        return matches;
+    }
+
+    private static void AddLongestMatchRuns(string s1, string s2, int offset1, int offset2, List<SubstringMatch> matches)
+    {
+        if (string.IsNullOrEmpty(s1) || string.IsNullOrEmpty(s2)) return;
+
         int len1 = s1.Length;
         int len2 = s2.Length;
         int[,] dp = new int[len1 + 1, len2 + 1];
+        int maxLen = 0;
+        int end1 = 0;
+        int end2 = 0;
 
         for (int i = 1; i <= len1; i++)
         {
@@ -871,80 +885,56 @@ public class C
             {
                 if (s1[i - 1] == s2[j - 1])
                 {
-                    dp[i, j] = dp[i - 1, j - 1] + 1;
+                    int val = dp[i - 1, j - 1] + 1;
+                    dp[i, j] = val;
+                    if (val > maxLen)
+                    {
+                        maxLen = val;
+                        end1 = i;
+                        end2 = j;
+                    }
                 }
                 else
                 {
-                    dp[i, j] = dp[i - 1, j] >= dp[i, j - 1] ? dp[i - 1, j] : dp[i, j - 1];
+                    dp[i, j] = 0;
                 }
             }
         }
 
-        List<Tuple<int, int>> matches = new List<Tuple<int, int>>();
-        int x = len1;
-        int y = len2;
-        while (x > 0 && y > 0)
+        if (maxLen == 0) return;
+
+        int start1 = end1 - maxLen;
+        int start2 = end2 - maxLen;
+
+        if (start1 > 0 && start2 > 0)
         {
-            if (s1[x - 1] == s2[y - 1])
-            {
-                matches.Add(new Tuple<int, int>(x - 1, y - 1));
-                x--;
-                y--;
-            }
-            else if (dp[x - 1, y] >= dp[x, y - 1])
-            {
-                x--;
-            }
-            else
-            {
-                y--;
-            }
+            AddLongestMatchRuns(
+                s1.Substring(0, start1),
+                s2.Substring(0, start2),
+                offset1,
+                offset2,
+                matches);
         }
 
-        matches.Reverse();
-
-        List<SubstringMatch> runs = new List<SubstringMatch>();
-        if (matches.Count == 0) return runs;
-
-        int runStart1 = matches[0].Item1;
-        int runStart2 = matches[0].Item2;
-        int runLength = 1;
-
-        for (int i = 1; i < matches.Count; i++)
+        matches.Add(new SubstringMatch
         {
-            int prev1 = matches[i - 1].Item1;
-            int prev2 = matches[i - 1].Item2;
-            int curr1 = matches[i].Item1;
-            int curr2 = matches[i].Item2;
-
-            if (curr1 == prev1 + 1 && curr2 == prev2 + 1)
-            {
-                runLength++;
-            }
-            else
-            {
-                runs.Add(new SubstringMatch
-                {
-                    Start1 = runStart1,
-                    Start2 = runStart2,
-                    Length = runLength,
-                    Value = s1.Substring(runStart1, runLength)
-                });
-                runStart1 = curr1;
-                runStart2 = curr2;
-                runLength = 1;
-            }
-        }
-
-        runs.Add(new SubstringMatch
-        {
-            Start1 = runStart1,
-            Start2 = runStart2,
-            Length = runLength,
-            Value = s1.Substring(runStart1, runLength)
+            Start1 = offset1 + start1,
+            Start2 = offset2 + start2,
+            Length = maxLen,
+            Value = s1.Substring(start1, maxLen)
         });
 
-        return runs;
+        int nextStart1 = start1 + maxLen;
+        int nextStart2 = start2 + maxLen;
+        if (nextStart1 < len1 && nextStart2 < len2)
+        {
+            AddLongestMatchRuns(
+                s1.Substring(nextStart1),
+                s2.Substring(nextStart2),
+                offset1 + nextStart1,
+                offset2 + nextStart2,
+                matches);
+        }
     }
 
     private static object[,] BuildColumnArray(List<string> items)
