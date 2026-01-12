@@ -109,9 +109,25 @@
  *    - Usage: =ISLOCALIP(ipAddress_string)
  *    - Returns: TRUE if local IP, FALSE otherwise or #N/A if invalid input
  *
- * 20. ARRAYSUBTRACT - complete documentation
+ * 20. ARRAYSUBTRACT(arrayA, arrayB)
+ *    - Subtracts values in arrayB from arrayA, preserving the shape of arrayA where possible
+ *    - Usage: =ARRAYSUBTRACT(A1:A10, B1:B3)
+ *    - Returns: Dynamic array of values from arrayA that are not present in arrayB
  *
- * 21. EXTRACTSUBSTR - complete documentation
+ * 21. EXTRACTSUBSTR(inputString, startMarker, [endMarker])
+ *    - Extracts a substring between start and end markers
+ *    - Usage: =EXTRACTSUBSTR("A=[123] Z", "A=[", "]")
+ *    - Returns: The extracted substring or #N/A if markers are not found
+ *
+ * 22. STRING_COMMON(s1, s2, minLength)
+ *    - Returns maximal common substrings with a minimum length
+ *    - Usage: =STRING_COMMON("Hello there, how are you","Hello there how are you",5)
+ *    - Returns: Dynamic array of common substrings (empty if none meet minLength)
+ *
+ * 23. STRING_DIFF(s1, s2, minLength)
+ *    - Returns maximal differing substrings with a minimum length
+ *    - Usage: =STRING_DIFF("Hello there, how are you","Hello there how are you",1)
+ *    - Returns: Dynamic array of differing substrings from s1 (empty if none meet minLength)
  *
  * Notes:
  * - Functions marked as volatile recalculate when any cell changes
@@ -760,8 +776,185 @@ public class C
     }
 
     //--------------------------------------------------------------------
+    // 16. STRING_COMMON
+    //--------------------------------------------------------------------
+    [ExcelFunction(Name = "STRING_COMMON", Description = "Returns maximal common substrings with a minimum length", Category = "ExcelDNA Utilities")]
+    public static object[,] StringCommon(
+    [ExcelArgument(Description = "First string")] string s1,
+    [ExcelArgument(Description = "Second string")] string s2,
+    [ExcelArgument(Description = "Minimum substring length")] int minLength)
+    {
+        if (string.IsNullOrEmpty(s1) || string.IsNullOrEmpty(s2) || minLength < 1)
+        {
+            return new object[0, 0];
+        }
+
+        List<SubstringMatch> matches = GetCommonRunsFromLcs(s1, s2);
+        List<string> results = new List<string>();
+
+        foreach (var match in matches)
+        {
+            if (match.Length >= minLength) results.Add(match.Value);
+        }
+
+        return BuildColumnArray(results);
+    }
+
+    //--------------------------------------------------------------------
+    // 17. STRING_DIFF
+    //--------------------------------------------------------------------
+    [ExcelFunction(Name = "STRING_DIFF", Description = "Returns maximal differing substrings with a minimum length", Category = "ExcelDNA Utilities")]
+    public static object[,] StringDiff(
+    [ExcelArgument(Description = "First string")] string s1,
+    [ExcelArgument(Description = "Second string")] string s2,
+    [ExcelArgument(Description = "Minimum substring length")] int minLength)
+    {
+        if (string.IsNullOrEmpty(s1) || minLength < 1)
+        {
+            return new object[0, 0];
+        }
+
+        if (string.IsNullOrEmpty(s2))
+        {
+            return (s1.Length >= minLength) ? BuildColumnArray(new List<string> { s1 }) : new object[0, 0];
+        }
+
+        List<SubstringMatch> selected = GetCommonRunsFromLcs(s1, s2);
+
+        List<string> diffs = new List<string>();
+        int current = 0;
+        foreach (var match in selected)
+        {
+            if (match.Start1 > current)
+            {
+                int length = match.Start1 - current;
+                if (length >= minLength)
+                {
+                    diffs.Add(s1.Substring(current, length));
+                }
+            }
+            current = match.Start1 + match.Length;
+        }
+
+        if (current < s1.Length)
+        {
+            int length = s1.Length - current;
+            if (length >= minLength)
+            {
+                diffs.Add(s1.Substring(current, length));
+            }
+        }
+
+        return BuildColumnArray(diffs);
+    }
+
+    //--------------------------------------------------------------------
     // Utility helpers
     //--------------------------------------------------------------------
+    private struct SubstringMatch
+    {
+        public int Start1;
+        public int Start2;
+        public int Length;
+        public string Value;
+    }
+
+    private static List<SubstringMatch> GetCommonRunsFromLcs(string s1, string s2)
+    {
+        int len1 = s1.Length;
+        int len2 = s2.Length;
+        int[,] dp = new int[len1 + 1, len2 + 1];
+
+        for (int i = 1; i <= len1; i++)
+        {
+            for (int j = 1; j <= len2; j++)
+            {
+                if (s1[i - 1] == s2[j - 1])
+                {
+                    dp[i, j] = dp[i - 1, j - 1] + 1;
+                }
+                else
+                {
+                    dp[i, j] = dp[i - 1, j] >= dp[i, j - 1] ? dp[i - 1, j] : dp[i, j - 1];
+                }
+            }
+        }
+
+        List<Tuple<int, int>> matches = new List<Tuple<int, int>>();
+        int x = len1;
+        int y = len2;
+        while (x > 0 && y > 0)
+        {
+            if (s1[x - 1] == s2[y - 1])
+            {
+                matches.Add(new Tuple<int, int>(x - 1, y - 1));
+                x--;
+                y--;
+            }
+            else if (dp[x - 1, y] >= dp[x, y - 1])
+            {
+                x--;
+            }
+            else
+            {
+                y--;
+            }
+        }
+
+        matches.Reverse();
+
+        List<SubstringMatch> runs = new List<SubstringMatch>();
+        if (matches.Count == 0) return runs;
+
+        int runStart1 = matches[0].Item1;
+        int runStart2 = matches[0].Item2;
+        int runLength = 1;
+
+        for (int i = 1; i < matches.Count; i++)
+        {
+            int prev1 = matches[i - 1].Item1;
+            int prev2 = matches[i - 1].Item2;
+            int curr1 = matches[i].Item1;
+            int curr2 = matches[i].Item2;
+
+            if (curr1 == prev1 + 1 && curr2 == prev2 + 1)
+            {
+                runLength++;
+            }
+            else
+            {
+                runs.Add(new SubstringMatch
+                {
+                    Start1 = runStart1,
+                    Start2 = runStart2,
+                    Length = runLength,
+                    Value = s1.Substring(runStart1, runLength)
+                });
+                runStart1 = curr1;
+                runStart2 = curr2;
+                runLength = 1;
+            }
+        }
+
+        runs.Add(new SubstringMatch
+        {
+            Start1 = runStart1,
+            Start2 = runStart2,
+            Length = runLength,
+            Value = s1.Substring(runStart1, runLength)
+        });
+
+        return runs;
+    }
+
+    private static object[,] BuildColumnArray(List<string> items)
+    {
+        if (items == null || items.Count == 0) return new object[0, 0];
+        object[,] result = new object[items.Count, 1];
+        for (int i = 0; i < items.Count; i++) result[i, 0] = items[i];
+        return result;
+    }
+
     private static bool AreEqual(object a, object b)
     {
         if (a == null && b == null) return true;
