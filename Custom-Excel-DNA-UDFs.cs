@@ -109,9 +109,25 @@
  *    - Usage: =ISLOCALIP(ipAddress_string)
  *    - Returns: TRUE if local IP, FALSE otherwise or #N/A if invalid input
  *
- * 20. ARRAYSUBTRACT - complete documentation
+ * 20. ARRAYSUBTRACT(arrayA, arrayB)
+ *    - Subtracts values in arrayB from arrayA, preserving the shape of arrayA where possible
+ *    - Usage: =ARRAYSUBTRACT(A1:A10, B1:B3)
+ *    - Returns: Dynamic array of values from arrayA that are not present in arrayB
  *
- * 21. EXTRACTSUBSTR - complete documentation
+ * 21. EXTRACTSUBSTR(inputString, startMarker, [endMarker])
+ *    - Extracts a substring between start and end markers
+ *    - Usage: =EXTRACTSUBSTR("A=[123] Z", "A=[", "]")
+ *    - Returns: The extracted substring or #N/A if markers are not found
+ *
+ * 22. STRING_COMMON(s1, s2, minLength)
+ *    - Returns maximal common substrings with a minimum length
+ *    - Usage: =STRING_COMMON("Hello there, how are you","Hello there how are you",5)
+ *    - Returns: Dynamic array of common substrings (empty if none meet minLength)
+ *
+ * 23. STRING_DIFF(s1, s2, minLength)
+ *    - Returns maximal differing substrings with a minimum length
+ *    - Usage: =STRING_DIFF("Hello there, how are you","Hello there how are you",1)
+ *    - Returns: Dynamic array of differing substrings from s1 and s2 (empty if none meet minLength)
  *
  * Notes:
  * - Functions marked as volatile recalculate when any cell changes
@@ -760,8 +776,184 @@ public class C
     }
 
     //--------------------------------------------------------------------
+    // 16. STRING_COMMON
+    //--------------------------------------------------------------------
+    [ExcelFunction(Name = "STRING_COMMON", Description = "Returns maximal common substrings with a minimum length", Category = "ExcelDNA Utilities")]
+    public static object[,] StringCommon(
+    [ExcelArgument(Description = "First string")] string s1,
+    [ExcelArgument(Description = "Second string")] string s2,
+    [ExcelArgument(Description = "Minimum substring length")] int minLength)
+    {
+        if (string.IsNullOrEmpty(s1) || string.IsNullOrEmpty(s2) || minLength < 1)
+        {
+            return new object[0, 0];
+        }
+
+        List<SubstringMatch> matches = GetCommonSubstringsByLongestMatch(s1, s2);
+        List<string> results = new List<string>();
+
+        foreach (var match in matches)
+        {
+            if (match.Length >= minLength) results.Add(match.Value);
+        }
+
+        return BuildColumnArray(results);
+    }
+
+    //--------------------------------------------------------------------
+    // 17. STRING_DIFF
+    //--------------------------------------------------------------------
+    [ExcelFunction(Name = "STRING_DIFF", Description = "Returns maximal differing substrings with a minimum length", Category = "ExcelDNA Utilities")]
+    public static object[,] StringDiff(
+    [ExcelArgument(Description = "First string")] string s1,
+    [ExcelArgument(Description = "Second string")] string s2,
+    [ExcelArgument(Description = "Minimum substring length")] int minLength)
+    {
+        if (string.IsNullOrEmpty(s1) || minLength < 1)
+        {
+            return new object[0, 0];
+        }
+
+        if (string.IsNullOrEmpty(s2))
+        {
+            return (s1.Length >= minLength) ? BuildColumnArray(new List<string> { s1 }) : new object[0, 0];
+        }
+
+        List<SubstringMatch> selected = GetCommonSubstringsByLongestMatch(s1, s2);
+
+        List<string> diffs = new List<string>();
+        diffs.AddRange(CollectDiffs(s1, selected.OrderBy(m => m.Start1), minLength, match => match.Start1));
+        diffs.AddRange(CollectDiffs(s2, selected.OrderBy(m => m.Start2), minLength, match => match.Start2));
+
+        return BuildColumnArray(diffs);
+    }
+
+    //--------------------------------------------------------------------
     // Utility helpers
     //--------------------------------------------------------------------
+    private struct SubstringMatch
+    {
+        public int Start1;
+        public int Start2;
+        public int Length;
+        public string Value;
+    }
+
+    private static List<SubstringMatch> GetCommonSubstringsByLongestMatch(string s1, string s2)
+    {
+        List<SubstringMatch> matches = new List<SubstringMatch>();
+        AddLongestMatchRuns(s1, s2, 0, 0, matches);
+        return matches;
+    }
+
+    private static void AddLongestMatchRuns(string s1, string s2, int offset1, int offset2, List<SubstringMatch> matches)
+    {
+        if (string.IsNullOrEmpty(s1) || string.IsNullOrEmpty(s2)) return;
+
+        int len1 = s1.Length;
+        int len2 = s2.Length;
+        int[,] dp = new int[len1 + 1, len2 + 1];
+        int maxLen = 0;
+        int end1 = 0;
+        int end2 = 0;
+
+        for (int i = 1; i <= len1; i++)
+        {
+            for (int j = 1; j <= len2; j++)
+            {
+                if (s1[i - 1] == s2[j - 1])
+                {
+                    int val = dp[i - 1, j - 1] + 1;
+                    dp[i, j] = val;
+                    if (val > maxLen)
+                    {
+                        maxLen = val;
+                        end1 = i;
+                        end2 = j;
+                    }
+                }
+                else
+                {
+                    dp[i, j] = 0;
+                }
+            }
+        }
+
+        if (maxLen == 0) return;
+
+        int start1 = end1 - maxLen;
+        int start2 = end2 - maxLen;
+
+        if (start1 > 0 && start2 > 0)
+        {
+            AddLongestMatchRuns(
+                s1.Substring(0, start1),
+                s2.Substring(0, start2),
+                offset1,
+                offset2,
+                matches);
+        }
+
+        matches.Add(new SubstringMatch
+        {
+            Start1 = offset1 + start1,
+            Start2 = offset2 + start2,
+            Length = maxLen,
+            Value = s1.Substring(start1, maxLen)
+        });
+
+        int nextStart1 = start1 + maxLen;
+        int nextStart2 = start2 + maxLen;
+        if (nextStart1 < len1 && nextStart2 < len2)
+        {
+            AddLongestMatchRuns(
+                s1.Substring(nextStart1),
+                s2.Substring(nextStart2),
+                offset1 + nextStart1,
+                offset2 + nextStart2,
+                matches);
+        }
+    }
+
+    private static List<string> CollectDiffs(string source, IEnumerable<SubstringMatch> matches, int minLength, Func<SubstringMatch, int> startSelector)
+    {
+        List<string> diffs = new List<string>();
+        int current = 0;
+        foreach (var match in matches)
+        {
+            int matchStart = startSelector(match);
+            if (matchStart > current)
+            {
+                int length = matchStart - current;
+                if (length >= minLength)
+                {
+                    diffs.Add(source.Substring(current, length));
+                }
+            }
+            int matchEnd = matchStart + match.Length;
+            if (matchEnd > current) current = matchEnd;
+        }
+
+        if (current < source.Length)
+        {
+            int length = source.Length - current;
+            if (length >= minLength)
+            {
+                diffs.Add(source.Substring(current, length));
+            }
+        }
+
+        return diffs;
+    }
+
+    private static object[,] BuildColumnArray(List<string> items)
+    {
+        if (items == null || items.Count == 0) return new object[0, 0];
+        object[,] result = new object[items.Count, 1];
+        for (int i = 0; i < items.Count; i++) result[i, 0] = items[i];
+        return result;
+    }
+
     private static bool AreEqual(object a, object b)
     {
         if (a == null && b == null) return true;
