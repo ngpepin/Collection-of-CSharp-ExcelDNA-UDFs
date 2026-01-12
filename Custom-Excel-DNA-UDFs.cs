@@ -109,13 +109,25 @@
  *    - Usage: =ISLOCALIP(ipAddress_string)
  *    - Returns: TRUE if local IP, FALSE otherwise or #N/A if invalid input
  *
- * 20. ARRAYSUBTRACT - complete documentation
+ * 20. ARRAYSUBTRACT(arrayA, arrayB)
+ *    - Subtracts values in arrayB from arrayA, preserving the shape of arrayA where possible
+ *    - Usage: =ARRAYSUBTRACT(A1:A10, B1:B3)
+ *    - Returns: Dynamic array of values from arrayA that are not present in arrayB
  *
- * 21. EXTRACTSUBSTR - complete documentation
+ * 21. EXTRACTSUBSTR(inputString, startMarker, [endMarker])
+ *    - Extracts a substring between start and end markers
+ *    - Usage: =EXTRACTSUBSTR("A=[123] Z", "A=[", "]")
+ *    - Returns: The extracted substring or #N/A if markers are not found
  *
- * 22. STRING_COMMON - returns maximal common substrings with a minimum length
+ * 22. STRING_COMMON(s1, s2, minLength)
+ *    - Returns maximal common substrings with a minimum length
+ *    - Usage: =STRING_COMMON("Hello there, how are you","Hello there how are you",5)
+ *    - Returns: Dynamic array of common substrings (empty if none meet minLength)
  *
- * 23. STRING_DIFF - returns maximal differing substrings with a minimum length
+ * 23. STRING_DIFF(s1, s2, minLength)
+ *    - Returns maximal differing substrings with a minimum length
+ *    - Usage: =STRING_DIFF("Hello there, how are you","Hello there how are you",1)
+ *    - Returns: Dynamic array of differing substrings from s1 (empty if none meet minLength)
  *
  * Notes:
  * - Functions marked as volatile recalculate when any cell changes
