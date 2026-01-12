@@ -127,7 +127,7 @@
  * 23. STRING_DIFF(s1, s2, minLength)
  *    - Returns maximal differing substrings with a minimum length
  *    - Usage: =STRING_DIFF("Hello there, how are you","Hello there how are you",1)
- *    - Returns: Dynamic array of differing substrings from s1 (empty if none meet minLength)
+ *    - Returns: Dynamic array of differing substrings from s1 and s2 (empty if none meet minLength)
  *
  * Notes:
  * - Functions marked as volatile recalculate when any cell changes
@@ -819,33 +819,11 @@ public class C
             return (s1.Length >= minLength) ? BuildColumnArray(new List<string> { s1 }) : new object[0, 0];
         }
 
-        List<SubstringMatch> selected = GetCommonSubstringsByLongestMatch(s1, s2)
-            .OrderBy(m => m.Start1)
-            .ToList();
+        List<SubstringMatch> selected = GetCommonSubstringsByLongestMatch(s1, s2);
 
         List<string> diffs = new List<string>();
-        int current = 0;
-        foreach (var match in selected)
-        {
-            if (match.Start1 > current)
-            {
-                int length = match.Start1 - current;
-                if (length >= minLength)
-                {
-                    diffs.Add(s1.Substring(current, length));
-                }
-            }
-            current = match.Start1 + match.Length;
-        }
-
-        if (current < s1.Length)
-        {
-            int length = s1.Length - current;
-            if (length >= minLength)
-            {
-                diffs.Add(s1.Substring(current, length));
-            }
-        }
+        diffs.AddRange(CollectDiffs(s1, selected.OrderBy(m => m.Start1), minLength, match => match.Start1));
+        diffs.AddRange(CollectDiffs(s2, selected.OrderBy(m => m.Start2), minLength, match => match.Start2));
 
         return BuildColumnArray(diffs);
     }
@@ -935,6 +913,37 @@ public class C
                 offset2 + nextStart2,
                 matches);
         }
+    }
+
+    private static List<string> CollectDiffs(string source, IEnumerable<SubstringMatch> matches, int minLength, Func<SubstringMatch, int> startSelector)
+    {
+        List<string> diffs = new List<string>();
+        int current = 0;
+        foreach (var match in matches)
+        {
+            int matchStart = startSelector(match);
+            if (matchStart > current)
+            {
+                int length = matchStart - current;
+                if (length >= minLength)
+                {
+                    diffs.Add(source.Substring(current, length));
+                }
+            }
+            int matchEnd = matchStart + match.Length;
+            if (matchEnd > current) current = matchEnd;
+        }
+
+        if (current < source.Length)
+        {
+            int length = source.Length - current;
+            if (length >= minLength)
+            {
+                diffs.Add(source.Substring(current, length));
+            }
+        }
+
+        return diffs;
     }
 
     private static object[,] BuildColumnArray(List<string> items)
