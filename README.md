@@ -127,6 +127,26 @@ The UDFs in this collection are implemented in C# and can be integrated into Exc
     - **Usage**: `=ISLOCALIP(ipAddress_string)`  
     - **Returns**: `TRUE` if local IP, `FALSE` otherwise or `#N/A` if invalid input  
 
+20. **ARRAYSUBTRACT(arrayA, arrayB)**  
+    - Subtracts values in `arrayB` from `arrayA`, preserving shape where possible  
+    - **Usage**: `=ARRAYSUBTRACT(A1:A10, B1:B3)`  
+    - **Returns**: Dynamic array of values from `arrayA` that are not present in `arrayB`  
+
+21. **EXTRACTSUBSTR(inputString, startMarker, [endMarker])**  
+    - Extracts a substring between start and end markers  
+    - **Usage**: `=EXTRACTSUBSTR("A=[123] Z", "A=[", "]")`  
+    - **Returns**: Extracted substring or `#N/A` if markers are not found  
+
+22. **STRING_COMMON(s1, s2, minLength)**  
+    - Returns maximal common substrings with a minimum length  
+    - **Usage**: `=STRING_COMMON("Hello there, how are you", "Hello there how are you", 5)`  
+    - **Returns**: Dynamic array of common substrings (empty if none meet `minLength`)  
+
+23. **STRING_DIFF(s1, s2, minLength)**  
+    - Returns maximal differing substrings with a minimum length  
+    - **Usage**: `=STRING_DIFF("Hello there, how are you", "Hello there how are you", 1)`  
+    - **Returns**: Dynamic array of differing substrings from both inputs (empty if none meet `minLength`)  
+
 ## Integration with eSharper
 
 To simplify the management and usage of these UDFs within Excel 365, this project leverages the [eSharper](https://vlasovstudio.com/esharper/) Excel add-in container.
