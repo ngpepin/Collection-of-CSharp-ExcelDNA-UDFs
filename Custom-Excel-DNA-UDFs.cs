@@ -518,6 +518,19 @@ public class C
         return result;
     }
 
+
+    //--------------------------------------------------------------------
+    // AreEqual helper (moved above IsMemberOf for visibility)
+    //--------------------------------------------------------------------
+    private static bool AreEqual(object a, object b)
+    {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        if (a is ExcelEmpty || b is ExcelEmpty) return false;
+        if (a is ExcelError || b is ExcelError) return false;
+        return a.ToString() == b.ToString();
+    }
+
     //--------------------------------------------------------------------
     // 10. IsMemberOf
     //--------------------------------------------------------------------
@@ -829,8 +842,44 @@ public class C
     }
 
     //--------------------------------------------------------------------
-    // Utility helpers
+    // String Trimming UDFs
     //--------------------------------------------------------------------
+
+
+
+    /// <summary>
+    /// Removes x characters from the right end of a string s.
+    /// </summary>
+    [ExcelFunction(Name = "TRIM_RIGHT", Description = "Removes x characters from the right end of a string.", Category = "ExcelDNA Utilities")]
+    public static object TrimRight(
+        [ExcelArgument(Description = "Input string")] string s,
+        [ExcelArgument(Description = "Number of characters to trim from the right")] object x)
+    {
+        MaybeVolatile();
+        if (s == null) return ExcelError.ExcelErrorNull;
+        int n;
+        if (!TryGetInt(x, out n) || n < 0) return ExcelError.ExcelErrorValue;
+        if (n >= s.Length) return string.Empty;
+        return s.Substring(0, s.Length - n);
+    }
+
+    /// <summary>
+    /// Removes x characters from the left end of a string s.
+    /// </summary>
+    [ExcelFunction(Name = "TRIM_LEFT", Description = "Removes x characters from the left end of a string.", Category = "ExcelDNA Utilities")]
+    public static object TrimLeft(
+        [ExcelArgument(Description = "Input string")] string s,
+        [ExcelArgument(Description = "Number of characters to trim from the left")] object x)
+    {
+        MaybeVolatile();
+        if (s == null) return ExcelError.ExcelErrorNull;
+        int n;
+        if (!TryGetInt(x, out n) || n < 0) return ExcelError.ExcelErrorValue;
+        if (n >= s.Length) return string.Empty;
+        return s.Substring(n);
+    }
+
+    // ...existing code...
     private struct SubstringMatch
     {
         public int Start1;
@@ -954,13 +1003,35 @@ public class C
         return result;
     }
 
-    private static bool AreEqual(object a, object b)
+
+    // Helper to robustly parse Excel argument to int (handles double, string, etc.)
+    private static bool TryGetInt(object arg, out int value)
     {
-        if (a == null && b == null) return true;
-        if (a == null || b == null) return false;
-        if (a is ExcelEmpty || b is ExcelEmpty) return false;
-        if (a is ExcelError || b is ExcelError) return false;
-        return a.ToString() == b.ToString();
+        if (arg is int)
+        {
+            value = (int)arg;
+            return true;
+        }
+        if (arg is double)
+        {
+            double d = (double)arg;
+            if (d % 1 == 0 && d >= int.MinValue && d <= int.MaxValue)
+            {
+                value = (int)d;
+                return true;
+            }
+        }
+        if (arg is string)
+        {
+            int parsed;
+            if (int.TryParse((string)arg, out parsed))
+            {
+                value = parsed;
+                return true;
+            }
+        }
+        value = 0;
+        return false;
     }
 
     private static string GenerateHash(string txt, int len)

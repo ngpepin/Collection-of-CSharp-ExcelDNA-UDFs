@@ -142,10 +142,16 @@ The UDFs in this collection are implemented in C# and can be integrated into Exc
     - **Usage**: `=STRING_COMMON("Hello there, how are you", "Hello there how are you", 5)`  
     - **Returns**: Dynamic array of common substrings (empty if none meet `minLength`)  
 
-23. **STRING_DIFF(s1, s2, minLength)**  
-    - Returns maximal differing substrings with a minimum length  
-    - **Usage**: `=STRING_DIFF("Hello there, how are you", "Hello there how are you", 1)`  
-    - **Returns**: Dynamic array of differing substrings from both inputs (empty if none meet `minLength`)  
+
+24. **TRIM_RIGHT(s, x)**  
+  - Trims `x` characters from the right end of string `s`  
+  - **Usage**: `=TRIM_RIGHT("abcdef", 2)`  
+  - **Returns**: `"abcd"` (removes last 2 characters; returns empty string if `x` >= length of `s`)  
+
+25. **TRIM_LEFT(s, x)**  
+  - Trims `x` characters from the left end of string `s`  
+  - **Usage**: `=TRIM_LEFT("abcdef", 2)`  
+  - **Returns**: `"cdef"` (removes first 2 characters; returns empty string if `x` >= length of `s`)  
 
 ## Integration with eSharper
 
