@@ -9,7 +9,7 @@
  * VERCELDNA, SETTARGETVERSION, GETTARGETVERSION, RECALCALL, GETITERATIONSTATUS, SETITERATION, ISVISIBLE, DESCRIBE, INJECTVALUE, FINDPOS, 
  * PUTOBJECT, GETOBJECT, PURGEOBJECTS,TRUESPLIT, ISMEMBEROF, GETTHREADS, SETTHREADS, HASHARRAY, ISLOCALIP
  *
- * New in version 3.5.0:
+ * New in version 3.6.0:
  * 
  * Summary of Functions:
  *
@@ -197,7 +197,7 @@ public class C
     // Version info
     //--------------------------------------------------------------------
     private const string VERSION_MAJOR = "3";
-    private const string VERSION_MINOR = "5";
+    private const string VERSION_MINOR = "6";
     private const string VERSION_PATCH = "0";
     private const string CurrentVersion = VERSION_MAJOR + "." + VERSION_MINOR + "." + VERSION_PATCH;
     private static string _targetVersion = CurrentVersion;
