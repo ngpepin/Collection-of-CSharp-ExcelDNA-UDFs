@@ -5,3 +5,7 @@ This repository provides a suite of high-performance, thread-safe Excel User Def
 **Keywords:**
 
 Excel-DNA, Excel UDFs, C# Excel Add-in, Excel Automation, High-Performance Excel, eSharper, .NET Excel Integration, Excel Thread Management, Excel Custom Functions, Excel Macro Alternative.
+
+## Version 3.9.0
+
+The project includes 20 vector and matrix ML/AI UDFs, an Excel worksheet test harness, a command-line Mono test suite, a standalone Excel-DNA XLL deployment script, and a synchronized eSharper-compatible source file.

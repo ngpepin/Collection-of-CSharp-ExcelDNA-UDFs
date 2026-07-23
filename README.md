@@ -3,8 +3,8 @@
 This repository provides a collection of high-performance, thread-safe User Defined Functions (UDFs) for Microsoft Excel, developed using [Excel-DNA](https://excel-dna.net/). These functions are designed to enhance Excel's capabilities, offering advanced features for power users and developers.
 
 Author: Nicolas Pepin
-Date: 2025-06
-Version: 3.1.1
+Date: 2026-07
+Version: 3.9.0
 Licensing: MIT
 
 ## Table of Contents
@@ -142,20 +142,168 @@ The UDFs in this collection are implemented in C# and can be integrated into Exc
     - **Usage**: `=STRING_COMMON("Hello there, how are you", "Hello there how are you", 5)`  
     - **Returns**: Dynamic array of common substrings (empty if none meet `minLength`)  
 
+23. **STRING_DIFF(s1, s2, minLength)**
+    - Returns maximal differing substrings with a minimum length
+    - **Usage**: `=STRING_DIFF("Hello there, how are you", "Hello there how are you", 1)`
+    - **Returns**: Dynamic array of differing substrings from both inputs
 
-24. **TRIM_RIGHT(s, x)**  
-  - Trims `x` characters from the right end of string `s`  
-  - **Usage**: `=TRIM_RIGHT("abcdef", 2)`  
-  - **Returns**: `"abcd"` (removes last 2 characters; returns empty string if `x` >= length of `s`)  
+24. **TEXT_BEFORE(text, delimiter, [instance])**
+    - Returns text before a selected delimiter occurrence
+    - **Usage**: `=TEXT_BEFORE("North|America|Canada", "|", 2)`
+    - **Returns**: `"North|America"`; returns `#N/A` when the occurrence is absent
 
-25. **TRIM_LEFT(s, x)**  
-  - Trims `x` characters from the left end of string `s`  
-  - **Usage**: `=TRIM_LEFT("abcdef", 2)`  
-  - **Returns**: `"cdef"` (removes first 2 characters; returns empty string if `x` >= length of `s`)  
+25. **TEXT_AFTER(text, delimiter, [instance])**
+    - Returns text after a selected delimiter occurrence
+    - **Usage**: `=TEXT_AFTER("North|America|Canada", "|", 2)`
+    - **Returns**: `"Canada"`; returns `#N/A` when the occurrence is absent
+
+26. **REGEX_ISMATCH(text, pattern, [ignoreCase])**
+    - Tests text against a .NET regular expression with a one-second timeout
+    - **Usage**: `=REGEX_ISMATCH("INV-2026-0042", "^INV-[0-9]{4}-[0-9]{4}$")`
+    - **Returns**: `TRUE` for a match, `FALSE` otherwise, or `#VALUE!` for an invalid pattern
+
+27. **REGEX_EXTRACT(text, pattern, [group])**
+    - Returns the first regex match or a numbered or named capture group
+    - **Usage**: `=REGEX_EXTRACT("Order 8472", "Order ([0-9]+)", 1)`
+    - **Returns**: `"8472"`; returns `#N/A` when no match or group exists
+
+28. **REGEX_REPLACE(text, pattern, replacement, [ignoreCase])**
+    - Replaces every regex match using standard .NET replacement syntax
+    - **Usage**: `=REGEX_REPLACE("A  B   C", "\s+", " ")`
+    - **Returns**: `"A B C"`; returns `#VALUE!` for an invalid pattern
+
+29. **ARRAY_UNIQUE(inputArray, [ignoreCase])**
+    - Returns unique nonblank values as a vertical dynamic array in first-seen order
+    - **Usage**: `=ARRAY_UNIQUE(A2:A100, TRUE)`
+    - **Returns**: A spill range; `TRUE` makes text comparisons case-insensitive
+
+30. **ARRAY_DISTINCT_COUNT(inputArray, [ignoreCase])**
+    - Counts unique nonblank values using the same comparison rules as `ARRAY_UNIQUE`
+    - **Usage**: `=ARRAY_DISTINCT_COUNT(A2:A100, TRUE)`
+    - **Returns**: Integer distinct count
+
+31. **NUM_CLAMP(value, minimum, maximum)**
+    - Restricts a number to an inclusive lower and upper bound
+    - **Usage**: `=NUM_CLAMP(125, 0, 100)`
+    - **Returns**: `100`; returns `#VALUE!` when inputs are invalid or minimum exceeds maximum
+
+### Machine Learning and AI vector UDFs
+
+32. **VECTOR_DOT(vectorA, vectorB)**
+    - Computes the dot product of equally sized row or column vectors
+    - **Usage**: `=VECTOR_DOT(A2:A5, B2:B5)`
+    - **Returns**: Scalar dot product
+
+33. **VECTOR_NORM(vector, [p])**
+    - Computes an L-p norm, with Euclidean norm (`p=2`) as the default
+    - **Usage**: `=VECTOR_NORM(A2:A5, 2)`
+    - **Returns**: Scalar norm for any positive finite `p`
+
+34. **VECTOR_NORMALIZE(vector, [p])**
+    - Normalizes a vector to unit L-p norm while preserving row or column orientation
+    - **Usage**: `=VECTOR_NORMALIZE(A2:A5)`
+    - **Returns**: Dynamic vector; a zero vector returns `#DIV/0!`
+
+35. **VECTOR_COSINE_SIMILARITY(vectorA, vectorB)**
+    - Measures directional similarity, commonly used for embeddings
+    - **Usage**: `=VECTOR_COSINE_SIMILARITY(A2:A5, B2:B5)`
+    - **Returns**: Similarity from approximately `-1` to `1`
+
+36. **VECTOR_EUCLIDEAN_DISTANCE(vectorA, vectorB)**
+    - Computes straight-line distance between feature vectors
+    - **Usage**: `=VECTOR_EUCLIDEAN_DISTANCE(A2:A5, B2:B5)`
+    - **Returns**: Nonnegative scalar distance
+
+37. **VECTOR_MANHATTAN_DISTANCE(vectorA, vectorB)**
+    - Computes L1 distance between feature vectors
+    - **Usage**: `=VECTOR_MANHATTAN_DISTANCE(A2:A5, B2:B5)`
+    - **Returns**: Sum of absolute element differences
+
+38. **VECTOR_SOFTMAX(vector)**
+    - Converts logits into probabilities using a numerically stable implementation
+    - **Usage**: `=VECTOR_SOFTMAX(B2:B6)`
+    - **Returns**: Dynamic vector with values summing to approximately `1`
+
+39. **VECTOR_SIGMOID(vector)**
+    - Applies logistic sigmoid activation element-wise
+    - **Usage**: `=VECTOR_SIGMOID(B2:B6)`
+    - **Returns**: Dynamic vector with values between `0` and `1`
+
+40. **VECTOR_RELU(vector)**
+    - Applies rectified linear activation element-wise
+    - **Usage**: `=VECTOR_RELU(B2:B6)`
+    - **Returns**: Dynamic vector with negative values replaced by zero
+
+### Machine Learning and AI matrix UDFs
+
+41. **MATRIX_STANDARDIZE_COLUMNS(matrix, [sample])**
+    - Z-score standardizes each feature column, treating rows as observations
+    - **Usage**: `=MATRIX_STANDARDIZE_COLUMNS(A2:D101)`
+    - **Returns**: Dynamic matrix; constant columns become zeros
+
+42. **MATRIX_MINMAX_SCALE_COLUMNS(matrix, [targetMin], [targetMax])**
+    - Scales every feature column into a requested range, defaulting to `[0,1]`
+    - **Usage**: `=MATRIX_MINMAX_SCALE_COLUMNS(A2:D101, -1, 1)`
+    - **Returns**: Dynamic scaled matrix; constant columns use `targetMin`
+
+43. **MATRIX_PAIRWISE_DISTANCE(matrix, [metric])**
+    - Builds a square row-to-row distance matrix
+    - **Usage**: `=MATRIX_PAIRWISE_DISTANCE(A2:D20, "cosine")`
+    - **Returns**: Dynamic matrix using `euclidean`, `manhattan`, or `cosine` distance
+
+44. **MATRIX_COVARIANCE(matrix, [sample])**
+    - Computes covariance between feature columns
+    - **Usage**: `=MATRIX_COVARIANCE(A2:D101, TRUE)`
+    - **Returns**: Symmetric feature-by-feature covariance matrix
+
+45. **MATRIX_ONE_HOT(labels, [classLabels])**
+    - One-hot encodes a row or column label vector
+    - **Usage**: `=MATRIX_ONE_HOT(A2:A101)`
+    - **Returns**: Dynamic indicator matrix; inferred class order is first-seen unless supplied explicitly
+
+46. **MATRIX_CONFUSION(actual, predicted, [classLabels])**
+    - Builds a multiclass confusion matrix with actual classes as rows and predictions as columns
+    - **Usage**: `=MATRIX_CONFUSION(A2:A101, B2:B101)`
+    - **Returns**: Dynamic count matrix using explicit or first-seen class order
+
+
+47. **VECTOR_LOG_SOFTMAX(vector)**
+    - Converts logits to log probabilities using a stable log-sum-exp calculation
+    - **Usage**: `=VECTOR_LOG_SOFTMAX(B2:B6)`
+    - **Returns**: Dynamic row or column vector preserving the input orientation
+
+48. **VECTOR_TOP_K(vector, k, [largest])**
+    - Ranks a vector and returns source positions with their values
+    - **Usage**: `=VECTOR_TOP_K(B2:B100, 5, TRUE)`
+    - **Returns**: A `k`-by-2 spill array containing 1-based index and value; ties preserve source order
+
+49. **MATRIX_LINEAR_PREDICT(matrix, weights, [bias])**
+    - Applies a dense linear layer to row observations
+    - **Usage**: `=MATRIX_LINEAR_PREDICT(A2:D100, F2:H5, J2:L2)`
+    - **Returns**: Observation-by-output prediction matrix; bias may be omitted, scalar, or output-length
+
+50. **MATRIX_CORRELATION(matrix)**
+    - Computes Pearson correlation between feature columns
+    - **Usage**: `=MATRIX_CORRELATION(A2:D100)`
+    - **Returns**: Symmetric feature correlation matrix; constant columns return `#DIV/0!`
+
+51. **MATRIX_KMEANS_ASSIGN(matrix, centroids, [metric])**
+    - Assigns each observation to its nearest centroid
+    - **Usage**: `=MATRIX_KMEANS_ASSIGN(A2:D100, F2:I6, "euclidean")`
+    - **Returns**: Two-column spill array containing 1-based centroid index and distance
+
+### Version 3.9.0 design notes
+
+- Removed the four low-value or Excel-duplicative UDFs `TRIM_RIGHT`, `TRIM_LEFT`, `SAFE_DIVIDE`, and `DATE_ISBUSINESSDAY`.
+- The ML/AI collection now contains 20 deterministic, side-effect-free UDFs, all registered as thread-safe.
+- Numeric vectors must be a single row or column; numeric matrices treat rows as observations and columns as features.
+- Spill results use correctly sized `object[,]` arrays and preserve vector orientation where relevant.
+- Feature scaling, activations, similarities, distances, covariance, one-hot encoding, and confusion matrices require no external packages.
+- Invalid shapes, nonnumeric cells, incompatible dimensions, unsupported metrics, and invalid class definitions return explicit Excel errors.
 
 ## Integration with eSharper
 
-To simplify the management and usage of these UDFs within Excel 365, this project leverages the [eSharper](https://vlasovstudio.com/esharper/) Excel add-in container.
+The standalone `Custom-Excel-DNA-UDFs-ESharper.cs` file remains compatible with the [eSharper](https://vlasovstudio.com/esharper/) Excel add-in container for rapid interactive development. The normal deployment path uses `deploy.sh` and does not require eSharper.
 
 ## C# Version Compatibility
 
@@ -172,11 +320,14 @@ These UDFs use features from C# 10. Attempting to use syntax from later C# versi
 - .NET Framework 4.7.2 SDK or .NET 6.0 SDK
 - Excel-DNA NuGet package
 
-**Steps:**
-1. Clone the repository.
-2. Open in Visual Studio.
-3. Build to generate `.xll`.
-4. Load `.xll` in Excel via Add-ins menu.
+**Automated deployment:**
+1. Install Mono (`mcs` and `mono`), `curl`, and Python 3.
+2. Run `./deploy.sh`.
+3. Copy the contents of `dist/` together and load `dist/CustomExcelDnaUdfs.xll` from Excel Add-ins.
+
+The script downloads pinned Excel-DNA and Office Interop packages, compiles the managed assembly, creates the `.dna` manifest, and builds a standard Excel-DNA XLL deployment bundle. It defaults to 64-bit Excel; set `ARCH=x86` for 32-bit Excel. On Windows or under Wine, it also creates `CustomExcelDnaUdfs-packed.xll` when packing is available. Use `PACK_XLL=false` to skip packing or `PACK_XLL=true` to require it.
+
+**Testing:** Run `./tests/run-tests.sh` for the command-line C# harness. Open `Tests.xlsx` with `dist/CustomExcelDnaUdfs.xll` loaded to run the worksheet assertions on the `AIML_UDF_Tests` sheet.
 
 ## License
 

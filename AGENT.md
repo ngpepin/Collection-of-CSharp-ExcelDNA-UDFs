@@ -46,7 +46,7 @@ This project is a collection of high-performance, thread-safe User Defined Funct
 - Update the summary of functions at the top of the main C# file.
 
 ### 8. **Naming Conventions**
-- UDF names are ALL_CAPS with underscores (e.g., `TRIM_RIGHT`, `HASHARRAY`).
+- UDF names are ALL_CAPS with underscores (e.g., `VECTOR_NORMALIZE`, `HASHARRAY`).
 - Method names in C# use PascalCase (e.g., `TrimRight`).
 - Arguments use camelCase or descriptive names.
 
@@ -59,6 +59,78 @@ This project is a collection of high-performance, thread-safe User Defined Funct
 - New UDFs should follow the structure and validation patterns of existing, tested functions.
 - Use helper methods for repeated logic (e.g., argument parsing, array building).
 - Review similar UDFs for best practices before adding new ones.
+
+### 11. **Pure Utility and ML UDF Pattern (Version 3.9.0)**
+- Prefer deterministic, side-effect-free implementations for text, regex, array, numeric, and date utilities.
+- Do not call `MaybeVolatile()` unless the result genuinely depends on external workbook or application state.
+- For optional worksheet arguments, accept `object` and explicitly handle `ExcelMissing` and `ExcelEmpty`.
+- Bound regular-expression execution with a timeout and convert invalid patterns or timeout failures to `ExcelError.ExcelErrorValue`.
+- Preserve first-seen order for de-duplication UDFs; use a `HashSet<string>` only as the membership index.
+- Normalize typed array values with stable keys so numbers, booleans, dates, errors, and text remain distinguishable.
+- Return empty dynamic arrays as `new object[0, 0]`, matching the established collection convention.
+
+## Version 3.9.0 Utility and ML/AI UDFs
+
+The low-value or Excel-duplicative `TRIM_RIGHT`, `TRIM_LEFT`, `SAFE_DIVIDE`, and `DATE_ISBUSINESSDAY` functions were removed.
+
+| UDF | Purpose | Key behavior |
+| --- | --- | --- |
+| `TEXT_BEFORE` | Text extraction | Uses a 1-based delimiter occurrence and returns `#N/A` when absent |
+| `TEXT_AFTER` | Text extraction | Returns text following the selected delimiter occurrence |
+| `REGEX_ISMATCH` | Regex validation | Supports optional case-insensitive matching and a one-second timeout |
+| `REGEX_EXTRACT` | Regex extraction | Supports whole-match, numbered-group, and named-group output |
+| `REGEX_REPLACE` | Regex transformation | Uses standard .NET replacement syntax and bounded execution |
+| `ARRAY_UNIQUE` | Array de-duplication | Ignores blanks, preserves first-seen values, and spills vertically |
+| `ARRAY_DISTINCT_COUNT` | Array summary | Reuses the same comparison rules as `ARRAY_UNIQUE` |
+| `NUM_CLAMP` | Numeric guardrail | Validates bounds and clamps inclusively |
+| `VECTOR_DOT` | Vector algebra | Requires equally sized row or column vectors |
+| `VECTOR_NORM` | Vector magnitude | Supports positive finite L-p norms |
+| `VECTOR_NORMALIZE` | Feature normalization | Preserves vector orientation and rejects zero norm |
+| `VECTOR_COSINE_SIMILARITY` | Embedding similarity | Rejects zero vectors with `#DIV/0!` |
+| `VECTOR_EUCLIDEAN_DISTANCE` | Geometric distance | Computes L2 distance |
+| `VECTOR_MANHATTAN_DISTANCE` | Robust distance | Computes L1 distance |
+| `VECTOR_SOFTMAX` | Probability activation | Uses max-shift numerical stabilization |
+| `VECTOR_SIGMOID` | Neural activation | Uses branch-stable logistic evaluation |
+| `VECTOR_RELU` | Neural activation | Replaces negative values with zero |
+| `MATRIX_STANDARDIZE_COLUMNS` | Feature preprocessing | Rows are observations; constant columns become zero |
+| `MATRIX_MINMAX_SCALE_COLUMNS` | Feature preprocessing | Supports custom target bounds |
+| `MATRIX_PAIRWISE_DISTANCE` | Similarity analysis | Supports Euclidean, Manhattan, and cosine distance |
+| `MATRIX_COVARIANCE` | Feature statistics | Returns sample or population covariance |
+| `MATRIX_ONE_HOT` | Categorical encoding | Uses explicit or first-seen class order |
+| `MATRIX_CONFUSION` | Classification evaluation | Actual classes are rows; predicted classes are columns |
+| `VECTOR_LOG_SOFTMAX` | Probability activation | Uses stable log-sum-exp evaluation |
+| `VECTOR_TOP_K` | Ranking | Returns stable 1-based indices and values |
+| `MATRIX_LINEAR_PREDICT` | Dense inference | Supports one or many outputs plus scalar/vector bias |
+| `MATRIX_CORRELATION` | Feature statistics | Returns Pearson feature correlations |
+| `MATRIX_KMEANS_ASSIGN` | Clustering | Returns nearest centroid index and distance |
+
+### ML/AI array implementation rules
+- Numeric vectors must be exactly one row or one column; preserve that orientation in vector spill outputs.
+- Numeric matrices use rows as observations and columns as features unless explicitly documented otherwise.
+- Reject blanks, Excel errors, nonnumeric cells, mismatched vector lengths, and invalid matrix shapes rather than silently coercing them.
+- Use max-shift stabilization for softmax and branch-stable sigmoid evaluation.
+- For zero-variance feature columns, emit zero during standardization and `targetMin` during min-max scaling.
+- In pairwise distance matrices, compute one triangle and mirror it to preserve symmetry and reduce work.
+- For categorical encoders, use `BuildValueKey` so text, numbers, booleans, and dates remain type-distinct.
+- When class labels are omitted, preserve deterministic first-seen order; when supplied, reject duplicates and return `#N/A` for observations outside the class list.
+- Keep implementations dependency-free and compatible with C# 10, .NET Framework 4.7.2+, and .NET 6+.
+
+### Shared helpers added for these UDFs
+- `FindDelimiterOccurrence`, `TryGetOptionalPositiveInt`, and `GetOptionalBool` support optional utility arguments.
+- `GetUniqueValues`, `BuildValueKey`, and `BuildObjectColumnArray` implement stable typed de-duplication.
+- `TryGetNumericVector`, `TryGetNumericMatrix`, `BuildNumericVector`, and `BuildNumericMatrix` centralize strict spill-array conversion.
+- `ComputeVectorNorm`, `TryGetOptionalDouble`, and `TryGetDistanceMetric` centralize vector and distance validation.
+- `TryGetLabelVector`, `TryGetClassLabels`, and `BuildLabelIndex` centralize categorical encoding and evaluation.
+- `TryGetBiasVector` validates scalar and vector biases for dense linear inference.
+- `IndexedValue` provides stable value ranking for `VECTOR_TOP_K`.
+
+### Formal testing and deployment
+- `tests/ExcelDnaStubs.cs` provides the minimal Excel-DNA and Office Interop surface needed for command-line tests.
+- `tests/AimlUdfTests.cs` exercises every ML/AI UDF plus shape and error cases.
+- `tests/run-tests.sh` compiles the production source with the stubs using Mono and runs the suite.
+- `Tests.xlsx` contains Excel-native worksheet assertions for every ML/AI UDF.
+- `deploy.sh` builds the standalone Excel-DNA XLL deployment bundle from `Custom-Excel-DNA-UDFs.cs`; on Windows or under Wine it can additionally create a packed single-file XLL.
+- `Custom-Excel-DNA-UDFs-ESharper.cs` is the synchronized standalone source for eSharper users and must remain C# 10 compatible.
 
 ## Adding New UDFs: Step-by-Step
 
@@ -107,4 +179,4 @@ public static object UdfName(
 
 ---
 
-_Last updated: 2026-02-02_
+_Last updated: 2026-07-23_
