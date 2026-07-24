@@ -1,11 +1,83 @@
 using System;
+using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
+using System.Text;
+using System.Threading;
 using ExcelDna.Integration;
 
 public static class AimlUdfTests
 {
     private static int failures;
+
+    private sealed class MockLlmServer : IDisposable
+    {
+        private readonly HttpListener listener;
+        private readonly Thread worker;
+        public string BaseUrl { get; private set; }
+
+        public MockLlmServer()
+        {
+            TcpListener probe = new TcpListener(IPAddress.Loopback, 0);
+            probe.Start();
+            int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+
+            BaseUrl = "http://127.0.0.1:" + port;
+            listener = new HttpListener();
+            listener.Prefixes.Add(BaseUrl + "/");
+            listener.Start();
+            worker = new Thread(Serve);
+            worker.IsBackground = true;
+            worker.Start();
+        }
+
+        private void Serve()
+        {
+            while (listener.IsListening)
+            {
+                try
+                {
+                    HttpListenerContext context = listener.GetContext();
+                    string path = context.Request.Url.AbsolutePath;
+                    string response;
+                    if (path == "/v1/chat/completions")
+                        response = "{\"choices\":[{\"message\":{\"content\":\"openai-ok\"}}]}";
+                    else if (path == "/api/chat")
+                        response = "{\"message\":{\"content\":\"ollama-ok\"}}";
+                    else if (path == "/v1/embeddings")
+                        response = "{\"data\":[{\"embedding\":[0.1,0.2,0.3]}]}";
+                    else if (path == "/api/embed")
+                        response = "{\"embeddings\":[[1,2],[3,4]]}";
+                    else if (path == "/v1/models")
+                        response = "{\"data\":[{\"id\":\"alpha\"},{\"id\":\"beta\"}]}";
+                    else if (path == "/api/tags")
+                        response = "{\"models\":[{\"name\":\"local-a\"},{\"name\":\"local-b\"}]}";
+                    else
+                    {
+                        context.Response.StatusCode = 404;
+                        response = "{\"error\":\"not found\"}";
+                    }
+                    byte[] bytes = Encoding.UTF8.GetBytes(response);
+                    context.Response.ContentType = "application/json";
+                    context.Response.ContentLength64 = bytes.Length;
+                    context.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                    context.Response.OutputStream.Close();
+                }
+                catch (HttpListenerException) { break; }
+                catch (ObjectDisposedException) { break; }
+            }
+        }
+
+        public void Dispose()
+        {
+            if (listener.IsListening) listener.Stop();
+            listener.Close();
+            if (worker.IsAlive) worker.Join(1000);
+        }
+    }
 
     private static object[,] Col(params object[] values)
     {
@@ -35,6 +107,29 @@ public static class AimlUdfTests
         double actual = (double)actualObject;
         if (Math.Abs(actual - expected) > tolerance) Fail(name, "expected " + expected + ", got " + actual);
         else Pass(name);
+    }
+
+    private static void TextEquals(string name, object actual, string expected)
+    {
+        if (!(actual is string) || (string)actual != expected) Fail(name, "expected '" + expected + "', got '" + actual + "'");
+        else Pass(name);
+    }
+
+    private static void MatrixTextEquals(string name, object value, string[] expected)
+    {
+        object[,] actual = value as object[,];
+        if (actual == null || actual.GetLength(0) != expected.Length || actual.GetLength(1) != 1)
+        {
+            Fail(name, "shape mismatch");
+            return;
+        }
+        for (int i = 0; i < expected.Length; i++)
+            if (!object.Equals(actual[i, 0], expected[i]))
+            {
+                Fail(name, "mismatch at row " + i + ": expected " + expected[i] + ", got " + actual[i, 0]);
+                return;
+            }
+        Pass(name);
     }
 
     private static void Error(string name, object actual, ExcelError expected)
@@ -74,7 +169,8 @@ public static class AimlUdfTests
             "VECTOR_SIGMOID", "VECTOR_RELU", "MATRIX_STANDARDIZE_COLUMNS",
             "MATRIX_MINMAX_SCALE_COLUMNS", "MATRIX_PAIRWISE_DISTANCE", "MATRIX_COVARIANCE",
             "MATRIX_ONE_HOT", "MATRIX_CONFUSION", "VECTOR_LOG_SOFTMAX", "VECTOR_TOP_K",
-            "MATRIX_LINEAR_PREDICT", "MATRIX_CORRELATION", "MATRIX_KMEANS_ASSIGN"
+            "MATRIX_LINEAR_PREDICT", "MATRIX_CORRELATION", "MATRIX_KMEANS_ASSIGN",
+            "LLM_CHAT", "LLM_CHAT_IMAGE", "LLM_EMBED", "LLM_EMBED_BATCH", "LLM_LIST_MODELS", "LLM_JSON_VALUE"
         };
 
         var attributes = typeof(C).GetMethods(BindingFlags.Public | BindingFlags.Static)
@@ -85,8 +181,13 @@ public static class AimlUdfTests
         {
             var matching = attributes.Where(a => a.Name == name).ToList();
             if (matching.Count != 1) Fail("registration " + name, "expected one registration, got " + matching.Count);
-            else if (!matching[0].IsThreadSafe) Fail("registration " + name, "not marked thread-safe");
-            else Pass("registration " + name);
+            else
+            {
+                bool shouldBeThreadSafe = name == "LLM_JSON_VALUE" || !name.StartsWith("LLM_", StringComparison.Ordinal);
+                if (matching[0].IsThreadSafe != shouldBeThreadSafe)
+                    Fail("registration " + name, shouldBeThreadSafe ? "not marked thread-safe" : "network UDF must not be marked thread-safe");
+                else Pass("registration " + name);
+            }
         }
     }
 
@@ -130,6 +231,36 @@ public static class AimlUdfTests
         MatrixNear("MATRIX_KMEANS_ASSIGN",
             C.MatrixKMeansAssign(new object[,] { { 0.0, 0.0 }, { 9.0, 9.0 }, { 1.0, 1.0 } }, new object[,] { { 0.0, 0.0 }, { 10.0, 10.0 } }, "euclidean"),
             new double[,] { { 1.0, 0.0 }, { 2.0, Math.Sqrt(2.0) }, { 1.0, Math.Sqrt(2.0) } });
+
+        using (MockLlmServer server = new MockLlmServer())
+        {
+            TextEquals("LLM_CHAT",
+                C.LlmChat("hello", "test-model", server.BaseUrl, "secret", new ExcelMissing(), 0.2, 32, "openai"),
+                "openai-ok");
+            TextEquals("LLM_CHAT_IMAGE",
+                C.LlmChatImage("describe", "AQID", "vision-model", "image/png", server.BaseUrl, new ExcelMissing(), new ExcelMissing(), 0.1, 16, "ollama"),
+                "ollama-ok");
+            MatrixNear("LLM_EMBED",
+                C.LlmEmbed("hello", "embed-model", server.BaseUrl, "secret", "openai"),
+                new double[,] { { 0.1 }, { 0.2 }, { 0.3 } });
+            MatrixNear("LLM_EMBED_BATCH",
+                C.LlmEmbedBatch(Col("first", "second"), "embed-model", server.BaseUrl, new ExcelMissing(), "ollama"),
+                new double[,] { { 1.0, 2.0 }, { 3.0, 4.0 } });
+            MatrixTextEquals("LLM_LIST_MODELS",
+                C.LlmListModels(server.BaseUrl, "secret", "openai"),
+                new string[] { "alpha", "beta" });
+        }
+
+        TextEquals("LLM_JSON_VALUE", C.LlmJsonValue("{\"choices\":[{\"message\":{\"content\":\"hello\"}}]}", "choices[0].message.content"), "hello");
+        MatrixTextEquals("LLM_JSON_VALUE array", C.LlmJsonValue("{\"items\":[\"a\",\"b\"]}", "items"), new string[] { "a", "b" });
+        Error("LLM_CHAT_IMAGE invalid base64",
+            C.LlmChatImage("describe", "not-base64", "vision-model", new ExcelMissing(), new ExcelMissing(), new ExcelMissing(), new ExcelMissing(), new ExcelMissing(), new ExcelMissing(), "ollama"),
+            ExcelError.ExcelErrorValue);
+        Error("LLM invalid provider",
+            C.LlmEmbed("hello", "embed-model", new ExcelMissing(), new ExcelMissing(), "unknown"),
+            ExcelError.ExcelErrorValue);
+        Error("LLM_JSON_VALUE missing path", C.LlmJsonValue("{\"a\":1}", "b"), ExcelError.ExcelErrorNA);
+        Error("LLM_JSON_VALUE malformed JSON", C.LlmJsonValue("{bad", "a"), ExcelError.ExcelErrorValue);
 
         Error("vector shape", C.VectorNorm(new object[,] { { 1.0, 2.0 }, { 3.0, 4.0 } }, new ExcelMissing()), ExcelError.ExcelErrorValue);
         Error("vector length", C.VectorDot(Col(1.0), Col(1.0, 2.0)), ExcelError.ExcelErrorValue);

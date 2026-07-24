@@ -56,8 +56,15 @@ namespace ExcelDna.Integration
         public static object Application { get; set; }
     }
 
+    public delegate object ExcelFunc();
+
     public static class ExcelAsyncUtil
     {
+        public static object Run(string functionName, object parameters, ExcelFunc function)
+        {
+            return function == null ? null : function();
+        }
+
         public static void QueueAsMacro(Action action)
         {
             if (action != null) action();

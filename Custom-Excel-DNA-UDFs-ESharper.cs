@@ -1,9 +1,9 @@
 /*
  *
- * ExcelDNA User-Defined Functions 
+ * ExcelDNA User-Defined Functions
  *
- * This collection provides powerful worksheet functions that extend Excel's native capabilities. All functions are thread-safe and designed for high performance 
- * in large spreadsheets. Stateful functions (like INJECTVALUE) maintain state between calculations and as such violate Excel's "no side effects" rule 
+ * This collection provides worksheet functions that extend Excel's native capabilities. Pure calculation functions are thread-safe where appropriate; network and stateful functions use safe Excel-DNA execution patterns.
+ * in large spreadsheets. Stateful functions (like INJECTVALUE) maintain state between calculations and as such violate Excel's "no side effects" rule
  * (intentionally of course, because by doing so they allow state machines to be created in spreadsheet models!)
  *
  * VEXCELDNA, SETTARGETVERSION, GETTARGETVERSION, RECALCALL, GETITERATIONSTATUS, SETITERATION, ISVISIBLE, DESCRIBE, INJECTVALUE, FINDPOS,
@@ -12,10 +12,11 @@
  * ARRAY_DISTINCT_COUNT, NUM_CLAMP, VECTOR_DOT, VECTOR_NORM, VECTOR_NORMALIZE, VECTOR_COSINE_SIMILARITY,
  * VECTOR_EUCLIDEAN_DISTANCE, VECTOR_MANHATTAN_DISTANCE, VECTOR_SOFTMAX, VECTOR_SIGMOID, VECTOR_RELU,
  * MATRIX_STANDARDIZE_COLUMNS, MATRIX_MINMAX_SCALE_COLUMNS, MATRIX_PAIRWISE_DISTANCE, MATRIX_COVARIANCE, MATRIX_ONE_HOT, MATRIX_CONFUSION,
- * VECTOR_LOG_SOFTMAX, VECTOR_TOP_K, MATRIX_LINEAR_PREDICT, MATRIX_CORRELATION, MATRIX_KMEANS_ASSIGN
+ * VECTOR_LOG_SOFTMAX, VECTOR_TOP_K, MATRIX_LINEAR_PREDICT, MATRIX_CORRELATION, MATRIX_KMEANS_ASSIGN,
+ * LLM_CHAT, LLM_CHAT_IMAGE, LLM_EMBED, LLM_EMBED_BATCH, LLM_LIST_MODELS, LLM_JSON_VALUE
  *
- * New in version 3.9.0:
- * 
+ * New in version 4.0.0:
+ *
  * Summary of Functions:
  *
  * 1. VEXCELDNA()
@@ -218,6 +219,24 @@
  * 51. MATRIX_KMEANS_ASSIGN(matrix, centroids, [metric])
  *    - Assigns observations to their nearest centroid
  *
+ * 52. LLM_CHAT(prompt, model, [baseUrl], [apiKey], [systemPrompt], [temperature], [maxTokens], [provider])
+ *    - Sends a nonblocking text chat request to an OpenAI-compatible or Ollama endpoint
+ *
+ * 53. LLM_CHAT_IMAGE(prompt, imageBase64, model, [mimeType], [baseUrl], [apiKey], [systemPrompt], [temperature], [maxTokens], [provider])
+ *    - Sends a multimodal prompt with a Base64 image to a vision-capable model
+ *
+ * 54. LLM_EMBED(text, model, [baseUrl], [apiKey], [provider])
+ *    - Returns one embedding as a vertical spill vector
+ *
+ * 55. LLM_EMBED_BATCH(texts, model, [baseUrl], [apiKey], [provider])
+ *    - Returns one embedding row per input text
+ *
+ * 56. LLM_LIST_MODELS([baseUrl], [apiKey], [provider])
+ *    - Lists model identifiers exposed by the configured endpoint
+ *
+ * 57. LLM_JSON_VALUE(json, path)
+ *    - Extracts a scalar or array using a dotted JSON path
+ *
  * Notes:
  * - Functions marked as volatile recalculate when any cell changes
  * - Stateful functions (like INJECTVALUE) maintain state between calculations
@@ -225,14 +244,14 @@
  * - Thread management requires Excel 2007 or later
  *
 
- *  Notes re: GLOBAL VOLATILITY SWITCH 
+ *  Notes re: GLOBAL VOLATILITY SWITCH
  *
  *  Why this exists
  *  ---------------
  *  Many of the original Excel-DNA functions were decorated with [IsVolatile = true] (or called
  *  Application.Volatile in VBA).  On large models that can cause Excel to recalculate *every*
  *  instance of those functions whenever **any** cell changes, interrupting editing and killing
- *  performance.  
+ *  performance.
  *
  *  This file introduces an **opt-in, workbook-wide toggle** that lets the modeller decide:
  *      *  Volatility ON   -  behave exactly like the old code (recalc on every change)
@@ -277,6 +296,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Net;
+using System.Text;
+using System.Web.Script.Serialization;
 using ExcelDna.Integration;
 using Excel = Microsoft.Office.Interop.Excel;
 
@@ -285,8 +308,8 @@ public class C
     //--------------------------------------------------------------------
     // Version info
     //--------------------------------------------------------------------
-    private const string VERSION_MAJOR = "3";
-    private const string VERSION_MINOR = "9";
+    private const string VERSION_MAJOR = "4";
+    private const string VERSION_MINOR = "0";
     private const string VERSION_PATCH = "0";
     private const string CurrentVersion = VERSION_MAJOR + "." + VERSION_MINOR + "." + VERSION_PATCH;
     private static string _targetVersion = CurrentVersion;
@@ -1738,6 +1761,507 @@ public class C
             result[r, 1] = bestDistance;
         }
         return result;
+    }
+
+    //--------------------------------------------------------------------
+    // 52. LLM_CHAT
+    //--------------------------------------------------------------------
+    /// <summary>
+    /// Sends a text chat request to an OpenAI-compatible or Ollama endpoint without blocking Excel's calculation thread.
+    /// </summary>
+    [ExcelFunction(Name = "LLM_CHAT", Description = "Chat with an OpenAI-compatible or Ollama model", Category = "ExcelDNA LLM & Generative AI")]
+    public static object LlmChat(
+        [ExcelArgument(Description = "User prompt")] object promptObj,
+        [ExcelArgument(Description = "Model name")] object modelObj,
+        [ExcelArgument(Description = "Optional API base URL")] object baseUrlObj,
+        [ExcelArgument(Description = "Optional bearer API key")] object apiKeyObj,
+        [ExcelArgument(Description = "Optional system prompt")] object systemPromptObj,
+        [ExcelArgument(Description = "Optional temperature, default 0.2")] object temperatureObj,
+        [ExcelArgument(Description = "Optional maximum output tokens")] object maxTokensObj,
+        [ExcelArgument(Description = "Optional provider: openai or ollama")] object providerObj)
+    {
+        string prompt, model, baseUrl, apiKey, systemPrompt, provider;
+        double temperature;
+        int maxTokens;
+        if (!TryGetRequiredText(promptObj, out prompt) || !TryGetRequiredText(modelObj, out model) ||
+            !TryGetLlmOptions(baseUrlObj, apiKeyObj, systemPromptObj, temperatureObj, maxTokensObj, providerObj,
+                out baseUrl, out apiKey, out systemPrompt, out temperature, out maxTokens, out provider))
+            return ExcelError.ExcelErrorValue;
+
+        object[] key = new object[] { prompt, model, baseUrl, GenerateHash(apiKey, 12), systemPrompt, temperature, maxTokens, provider };
+        return ExcelAsyncUtil.Run("LLM_CHAT", key, delegate
+        {
+            return ExecuteLlmSafely(delegate { return ExecuteLlmChat(prompt, null, null, model, baseUrl, apiKey, systemPrompt, temperature, maxTokens, provider); });
+        });
+    }
+
+    //--------------------------------------------------------------------
+    // 53. LLM_CHAT_IMAGE
+    //--------------------------------------------------------------------
+    /// <summary>
+    /// Sends a multimodal prompt with a Base64-encoded image to an OpenAI-compatible or Ollama vision model.
+    /// </summary>
+    [ExcelFunction(Name = "LLM_CHAT_IMAGE", Description = "Chat with a vision model using a Base64 image", Category = "ExcelDNA LLM & Generative AI")]
+    public static object LlmChatImage(
+        [ExcelArgument(Description = "User prompt")] object promptObj,
+        [ExcelArgument(Description = "Base64 image, with or without a data URI prefix")] object imageBase64Obj,
+        [ExcelArgument(Description = "Model name")] object modelObj,
+        [ExcelArgument(Description = "Optional MIME type, default image/png")] object mimeTypeObj,
+        [ExcelArgument(Description = "Optional API base URL")] object baseUrlObj,
+        [ExcelArgument(Description = "Optional bearer API key")] object apiKeyObj,
+        [ExcelArgument(Description = "Optional system prompt")] object systemPromptObj,
+        [ExcelArgument(Description = "Optional temperature, default 0.2")] object temperatureObj,
+        [ExcelArgument(Description = "Optional maximum output tokens")] object maxTokensObj,
+        [ExcelArgument(Description = "Optional provider: openai or ollama")] object providerObj)
+    {
+        string prompt, imageBase64, model, mimeType, baseUrl, apiKey, systemPrompt, provider;
+        double temperature;
+        int maxTokens;
+        if (!TryGetRequiredText(promptObj, out prompt) || !TryGetRequiredText(imageBase64Obj, out imageBase64) ||
+            !TryGetRequiredText(modelObj, out model) ||
+            !TryGetOptionalText(mimeTypeObj, "image/png", out mimeType) ||
+            !TryGetLlmOptions(baseUrlObj, apiKeyObj, systemPromptObj, temperatureObj, maxTokensObj, providerObj,
+                out baseUrl, out apiKey, out systemPrompt, out temperature, out maxTokens, out provider))
+            return ExcelError.ExcelErrorValue;
+
+        imageBase64 = StripDataUriPrefix(imageBase64, ref mimeType);
+        if (!IsValidBase64(imageBase64)) return ExcelError.ExcelErrorValue;
+        object[] key = new object[] { prompt, GenerateHash(imageBase64, 16), model, mimeType, baseUrl, GenerateHash(apiKey, 12), systemPrompt, temperature, maxTokens, provider };
+        return ExcelAsyncUtil.Run("LLM_CHAT_IMAGE", key, delegate
+        {
+            return ExecuteLlmSafely(delegate { return ExecuteLlmChat(prompt, imageBase64, mimeType, model, baseUrl, apiKey, systemPrompt, temperature, maxTokens, provider); });
+        });
+    }
+
+    //--------------------------------------------------------------------
+    // 54. LLM_EMBED
+    //--------------------------------------------------------------------
+    /// <summary>
+    /// Creates one embedding vector and spills it vertically.
+    /// </summary>
+    [ExcelFunction(Name = "LLM_EMBED", Description = "Create an embedding vector using OpenAI-compatible or Ollama APIs", Category = "ExcelDNA LLM & Generative AI")]
+    public static object LlmEmbed(
+        [ExcelArgument(Description = "Text to embed")] object textObj,
+        [ExcelArgument(Description = "Embedding model name")] object modelObj,
+        [ExcelArgument(Description = "Optional API base URL")] object baseUrlObj,
+        [ExcelArgument(Description = "Optional bearer API key")] object apiKeyObj,
+        [ExcelArgument(Description = "Optional provider: openai or ollama")] object providerObj)
+    {
+        string input, model, baseUrl, apiKey, provider;
+        if (!TryGetRequiredText(textObj, out input) || !TryGetRequiredText(modelObj, out model) ||
+            !TryGetSimpleLlmOptions(baseUrlObj, apiKeyObj, providerObj, out baseUrl, out apiKey, out provider))
+            return ExcelError.ExcelErrorValue;
+        object[] key = new object[] { input, model, baseUrl, GenerateHash(apiKey, 12), provider };
+        return ExcelAsyncUtil.Run("LLM_EMBED", key, delegate
+        {
+            return ExecuteLlmSafely(delegate { return ExecuteEmbedding(new string[] { input }, model, baseUrl, apiKey, provider, false); });
+        });
+    }
+
+    //--------------------------------------------------------------------
+    // 55. LLM_EMBED_BATCH
+    //--------------------------------------------------------------------
+    /// <summary>
+    /// Creates one embedding per input row and spills an observation-by-dimension matrix.
+    /// </summary>
+    [ExcelFunction(Name = "LLM_EMBED_BATCH", Description = "Create an embedding matrix for a text vector", Category = "ExcelDNA LLM & Generative AI")]
+    public static object LlmEmbedBatch(
+        [ExcelArgument(Description = "Row or column vector of text values")] object[,] texts,
+        [ExcelArgument(Description = "Embedding model name")] object modelObj,
+        [ExcelArgument(Description = "Optional API base URL")] object baseUrlObj,
+        [ExcelArgument(Description = "Optional bearer API key")] object apiKeyObj,
+        [ExcelArgument(Description = "Optional provider: openai or ollama")] object providerObj)
+    {
+        string[] inputs;
+        string model, baseUrl, apiKey, provider;
+        if (!TryGetTextVector(texts, out inputs) || !TryGetRequiredText(modelObj, out model) ||
+            !TryGetSimpleLlmOptions(baseUrlObj, apiKeyObj, providerObj, out baseUrl, out apiKey, out provider))
+            return ExcelError.ExcelErrorValue;
+        object[] key = new object[] { string.Join("\u001f", inputs), model, baseUrl, GenerateHash(apiKey, 12), provider };
+        return ExcelAsyncUtil.Run("LLM_EMBED_BATCH", key, delegate
+        {
+            return ExecuteLlmSafely(delegate { return ExecuteEmbedding(inputs, model, baseUrl, apiKey, provider, true); });
+        });
+    }
+
+    //--------------------------------------------------------------------
+    // 56. LLM_LIST_MODELS
+    //--------------------------------------------------------------------
+    /// <summary>
+    /// Lists model identifiers exposed by an OpenAI-compatible /models endpoint or Ollama /api/tags.
+    /// </summary>
+    [ExcelFunction(Name = "LLM_LIST_MODELS", Description = "List models exposed by OpenAI-compatible or Ollama APIs", Category = "ExcelDNA LLM & Generative AI")]
+    public static object LlmListModels(
+        [ExcelArgument(Description = "Optional API base URL")] object baseUrlObj,
+        [ExcelArgument(Description = "Optional bearer API key")] object apiKeyObj,
+        [ExcelArgument(Description = "Optional provider: openai or ollama")] object providerObj)
+    {
+        string baseUrl, apiKey, provider;
+        if (!TryGetSimpleLlmOptions(baseUrlObj, apiKeyObj, providerObj, out baseUrl, out apiKey, out provider))
+            return ExcelError.ExcelErrorValue;
+        object[] key = new object[] { baseUrl, GenerateHash(apiKey, 12), provider };
+        return ExcelAsyncUtil.Run("LLM_LIST_MODELS", key, delegate
+        {
+            return ExecuteLlmSafely(delegate { return ExecuteListModels(baseUrl, apiKey, provider); });
+        });
+    }
+
+    //--------------------------------------------------------------------
+    // 57. LLM_JSON_VALUE
+    //--------------------------------------------------------------------
+    /// <summary>
+    /// Extracts a value from JSON using a simple dotted path with zero-based array indices.
+    /// </summary>
+    [ExcelFunction(Name = "LLM_JSON_VALUE", Description = "Extract a value from JSON using a dotted path", Category = "ExcelDNA LLM & Generative AI", IsThreadSafe = true)]
+    public static object LlmJsonValue(
+        [ExcelArgument(Description = "JSON text")] object jsonObj,
+        [ExcelArgument(Description = "Path such as choices[0].message.content")] object pathObj)
+    {
+        string json, path;
+        if (!TryGetRequiredText(jsonObj, out json) || !TryGetRequiredText(pathObj, out path)) return ExcelError.ExcelErrorValue;
+        try
+        {
+            object root = new JavaScriptSerializer().DeserializeObject(json);
+            object value;
+            if (!TryNavigateJson(root, path, out value)) return ExcelError.ExcelErrorNA;
+            return ConvertJsonValueForExcel(value);
+        }
+        catch { return ExcelError.ExcelErrorValue; }
+    }
+
+    private static object ExecuteLlmSafely(Func<object> action)
+    {
+        try { return action(); }
+        catch (WebException ex) { return "LLM_ERROR: " + ReadWebException(ex); }
+        catch (Exception ex) { return "LLM_ERROR: " + ex.Message; }
+    }
+
+    private static object ExecuteLlmChat(string prompt, string imageBase64, string mimeType, string model,
+        string baseUrl, string apiKey, string systemPrompt, double temperature, int maxTokens, string provider)
+    {
+        bool openAi = provider == "openai";
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body["model"] = model;
+        List<object> messages = new List<object>();
+        if (!string.IsNullOrEmpty(systemPrompt))
+            messages.Add(new Dictionary<string, object> { { "role", "system" }, { "content", systemPrompt } });
+
+        Dictionary<string, object> userMessage = new Dictionary<string, object>();
+        userMessage["role"] = "user";
+        if (string.IsNullOrEmpty(imageBase64))
+        {
+            userMessage["content"] = prompt;
+        }
+        else if (openAi)
+        {
+            userMessage["content"] = new object[]
+            {
+                new Dictionary<string, object> { { "type", "text" }, { "text", prompt } },
+                new Dictionary<string, object>
+                {
+                    { "type", "image_url" },
+                    { "image_url", new Dictionary<string, object> { { "url", "data:" + mimeType + ";base64," + imageBase64 } } }
+                }
+            };
+        }
+        else
+        {
+            userMessage["content"] = prompt;
+            userMessage["images"] = new string[] { imageBase64 };
+        }
+        messages.Add(userMessage);
+        body["messages"] = messages.ToArray();
+        body["stream"] = false;
+        if (openAi)
+        {
+            body["temperature"] = temperature;
+            if (maxTokens > 0) body["max_tokens"] = maxTokens;
+        }
+        else
+        {
+            Dictionary<string, object> options = new Dictionary<string, object>();
+            options["temperature"] = temperature;
+            if (maxTokens > 0) options["num_predict"] = maxTokens;
+            body["options"] = options;
+        }
+
+        string endpoint = BuildLlmEndpoint(baseUrl, provider, "/chat/completions", "/api/chat");
+        object root = SendJsonRequest(endpoint, "POST", body, apiKey);
+        object content;
+        string responsePath = openAi ? "choices[0].message.content" : "message.content";
+        if (!TryNavigateJson(root, responsePath, out content) || content == null) return "LLM_ERROR: response did not contain message content";
+        return content.ToString();
+    }
+
+    private static object ExecuteEmbedding(string[] inputs, string model, string baseUrl, string apiKey, string provider, bool batch)
+    {
+        bool openAi = provider == "openai";
+        Dictionary<string, object> body = new Dictionary<string, object>();
+        body["model"] = model;
+        body["input"] = batch ? (object)inputs : inputs[0];
+        string endpoint = BuildLlmEndpoint(baseUrl, provider, "/embeddings", "/api/embed");
+        object root = SendJsonRequest(endpoint, "POST", body, apiKey);
+        List<double[]> embeddings = new List<double[]>();
+        object collection;
+        if (openAi)
+        {
+            if (!TryNavigateJson(root, "data", out collection)) return "LLM_ERROR: response did not contain embedding data";
+            object[] data = collection as object[];
+            if (data == null) return "LLM_ERROR: invalid embedding data";
+            for (int i = 0; i < data.Length; i++)
+            {
+                object vector;
+                if (!TryNavigateJson(data[i], "embedding", out vector)) return "LLM_ERROR: invalid embedding vector";
+                double[] parsed;
+                if (!TryConvertJsonNumberArray(vector, out parsed)) return "LLM_ERROR: nonnumeric embedding vector";
+                embeddings.Add(parsed);
+            }
+        }
+        else
+        {
+            if (!TryNavigateJson(root, "embeddings", out collection)) return "LLM_ERROR: response did not contain embeddings";
+            object[] data = collection as object[];
+            if (data == null) return "LLM_ERROR: invalid embeddings";
+            for (int i = 0; i < data.Length; i++)
+            {
+                double[] parsed;
+                if (!TryConvertJsonNumberArray(data[i], out parsed)) return "LLM_ERROR: nonnumeric embedding vector";
+                embeddings.Add(parsed);
+            }
+        }
+        if (embeddings.Count == 0) return new object[0, 0];
+        int dimensions = embeddings[0].Length;
+        for (int i = 1; i < embeddings.Count; i++) if (embeddings[i].Length != dimensions) return "LLM_ERROR: inconsistent embedding dimensions";
+        object[,] result = new object[batch ? embeddings.Count : dimensions, batch ? dimensions : 1];
+        if (batch)
+        {
+            for (int r = 0; r < embeddings.Count; r++)
+                for (int c = 0; c < dimensions; c++) result[r, c] = embeddings[r][c];
+        }
+        else
+        {
+            for (int r = 0; r < dimensions; r++) result[r, 0] = embeddings[0][r];
+        }
+        return result;
+    }
+
+    private static object ExecuteListModels(string baseUrl, string apiKey, string provider)
+    {
+        bool openAi = provider == "openai";
+        string endpoint = BuildLlmEndpoint(baseUrl, provider, "/models", "/api/tags");
+        object root = SendJsonRequest(endpoint, "GET", null, apiKey);
+        object collection;
+        if (!TryNavigateJson(root, openAi ? "data" : "models", out collection)) return "LLM_ERROR: response did not contain models";
+        object[] rows = collection as object[];
+        if (rows == null) return "LLM_ERROR: invalid model list";
+        List<object> names = new List<object>();
+        string key = openAi ? "id" : "name";
+        for (int i = 0; i < rows.Length; i++)
+        {
+            object value;
+            if (TryNavigateJson(rows[i], key, out value) && value != null) names.Add(value.ToString());
+        }
+        return BuildObjectColumnArray(names);
+    }
+
+    private static object SendJsonRequest(string endpoint, string method, object body, string apiKey)
+    {
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(endpoint);
+        request.Method = method;
+        request.Accept = "application/json";
+        request.ContentType = "application/json";
+        request.Timeout = 120000;
+        request.ReadWriteTimeout = 120000;
+        request.UserAgent = "ExcelDNA-UDFs/4.0.0";
+        if (!string.IsNullOrEmpty(apiKey)) request.Headers[HttpRequestHeader.Authorization] = "Bearer " + apiKey;
+        if (body != null)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(body));
+            request.ContentLength = bytes.Length;
+            using (Stream stream = request.GetRequestStream()) stream.Write(bytes, 0, bytes.Length);
+        }
+        using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+        using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+            return new JavaScriptSerializer().DeserializeObject(reader.ReadToEnd());
+    }
+
+    private static string ReadWebException(WebException ex)
+    {
+        HttpWebResponse response = ex.Response as HttpWebResponse;
+        if (response == null) return ex.Message;
+        try
+        {
+            using (response)
+            using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+            {
+                string body = reader.ReadToEnd();
+                if (body.Length > 500) body = body.Substring(0, 500);
+                return ((int)response.StatusCode).ToString() + " " + response.StatusDescription + (body.Length == 0 ? string.Empty : ": " + body);
+            }
+        }
+        catch { return ex.Message; }
+    }
+
+    private static string BuildLlmEndpoint(string baseUrl, string provider, string openAiPath, string ollamaPath)
+    {
+        string root = baseUrl.TrimEnd('/');
+        if (provider == "openai")
+        {
+            if (!root.EndsWith("/v1", StringComparison.OrdinalIgnoreCase) && !root.Contains("/v1/")) root += "/v1";
+            return root + openAiPath;
+        }
+        return root + ollamaPath;
+    }
+
+    private static bool TryGetLlmOptions(object baseUrlObj, object apiKeyObj, object systemPromptObj,
+        object temperatureObj, object maxTokensObj, object providerObj,
+        out string baseUrl, out string apiKey, out string systemPrompt, out double temperature, out int maxTokens, out string provider)
+    {
+        baseUrl = apiKey = systemPrompt = provider = string.Empty;
+        temperature = 0.2;
+        maxTokens = 0;
+        if (!TryGetOptionalText(apiKeyObj, string.Empty, out apiKey) || !TryGetOptionalText(systemPromptObj, string.Empty, out systemPrompt)) return false;
+        if (!TryGetOptionalDouble(temperatureObj, 0.2, out temperature) || temperature < 0.0 || temperature > 2.0) return false;
+        if (!(maxTokensObj == null || maxTokensObj is ExcelMissing || maxTokensObj is ExcelEmpty) && (!TryGetInt(maxTokensObj, out maxTokens) || maxTokens < 1)) return false;
+        return ResolveLlmProviderAndUrl(baseUrlObj, providerObj, out baseUrl, out provider);
+    }
+
+    private static bool TryGetSimpleLlmOptions(object baseUrlObj, object apiKeyObj, object providerObj,
+        out string baseUrl, out string apiKey, out string provider)
+    {
+        apiKey = string.Empty;
+        if (!TryGetOptionalText(apiKeyObj, string.Empty, out apiKey)) { baseUrl = provider = string.Empty; return false; }
+        return ResolveLlmProviderAndUrl(baseUrlObj, providerObj, out baseUrl, out provider);
+    }
+
+    private static bool ResolveLlmProviderAndUrl(object baseUrlObj, object providerObj, out string baseUrl, out string provider)
+    {
+        string providerText;
+        if (!TryGetOptionalText(providerObj, string.Empty, out providerText)) { baseUrl = provider = string.Empty; return false; }
+        provider = providerText.Trim().ToLowerInvariant();
+        string suppliedUrl;
+        if (!TryGetOptionalText(baseUrlObj, string.Empty, out suppliedUrl)) { baseUrl = string.Empty; return false; }
+        if (provider.Length == 0)
+            provider = suppliedUrl.IndexOf("/v1", StringComparison.OrdinalIgnoreCase) >= 0 || suppliedUrl.IndexOf("openai", StringComparison.OrdinalIgnoreCase) >= 0 ? "openai" : "ollama";
+        if (provider != "openai" && provider != "ollama") { baseUrl = string.Empty; return false; }
+        baseUrl = suppliedUrl.Length == 0 ? (provider == "openai" ? "https://api.openai.com/v1" : "http://localhost:11434") : suppliedUrl;
+        Uri uri;
+        return Uri.TryCreate(baseUrl, UriKind.Absolute, out uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+    }
+
+    private static bool TryGetRequiredText(object value, out string text)
+    {
+        text = string.Empty;
+        if (IsBlankValue(value) || value is ExcelError) return false;
+        text = value.ToString();
+        return text.Length > 0;
+    }
+
+    private static bool TryGetOptionalText(object value, string defaultValue, out string text)
+    {
+        if (value == null || value is ExcelMissing || value is ExcelEmpty)
+        {
+            text = defaultValue;
+            return true;
+        }
+        if (value is ExcelError) { text = string.Empty; return false; }
+        text = value.ToString();
+        return true;
+    }
+
+    private static bool TryGetTextVector(object[,] input, out string[] values)
+    {
+        values = null;
+        if (input == null) return false;
+        int rows = input.GetLength(0), cols = input.GetLength(1);
+        if (rows < 1 || cols < 1 || (rows != 1 && cols != 1)) return false;
+        List<string> result = new List<string>();
+        for (int r = 0; r < rows; r++)
+            for (int c = 0; c < cols; c++)
+            {
+                string value;
+                if (!TryGetRequiredText(input[r, c], out value)) return false;
+                result.Add(value);
+            }
+        values = result.ToArray();
+        return values.Length > 0;
+    }
+
+    private static string StripDataUriPrefix(string value, ref string mimeType)
+    {
+        if (!value.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return value.Trim();
+        int comma = value.IndexOf(',');
+        if (comma < 0) return value;
+        string metadata = value.Substring(5, comma - 5);
+        int semicolon = metadata.IndexOf(';');
+        if (semicolon > 0) mimeType = metadata.Substring(0, semicolon);
+        return value.Substring(comma + 1).Trim();
+    }
+
+    private static bool IsValidBase64(string value)
+    {
+        try { Convert.FromBase64String(value); return true; }
+        catch { return false; }
+    }
+
+    private static bool TryNavigateJson(object root, string path, out object value)
+    {
+        value = root;
+        int position = 0;
+        while (position < path.Length)
+        {
+            if (path[position] == '.') { position++; continue; }
+            int start = position;
+            while (position < path.Length && path[position] != '.' && path[position] != '[') position++;
+            if (position > start)
+            {
+                string property = path.Substring(start, position - start);
+                Dictionary<string, object> dictionary = value as Dictionary<string, object>;
+                if (dictionary == null || !dictionary.TryGetValue(property, out value)) return false;
+            }
+            while (position < path.Length && path[position] == '[')
+            {
+                int close = path.IndexOf(']', position + 1);
+                if (close < 0) return false;
+                int index;
+                if (!int.TryParse(path.Substring(position + 1, close - position - 1), out index) || index < 0) return false;
+                object[] array = value as object[];
+                if (array == null || index >= array.Length) return false;
+                value = array[index];
+                position = close + 1;
+            }
+        }
+        return true;
+    }
+
+    private static object ConvertJsonValueForExcel(object value)
+    {
+        if (value == null) return string.Empty;
+        if (value is string || value is bool || value is double || value is decimal || value is int || value is long) return value;
+        object[] array = value as object[];
+        if (array != null)
+        {
+            object[,] result = new object[array.Length, 1];
+            for (int i = 0; i < array.Length; i++)
+                result[i, 0] = array[i] is Dictionary<string, object> || array[i] is object[]
+                    ? new JavaScriptSerializer().Serialize(array[i]) : array[i];
+            return result;
+        }
+        return new JavaScriptSerializer().Serialize(value);
+    }
+
+    private static bool TryConvertJsonNumberArray(object value, out double[] result)
+    {
+        result = null;
+        object[] array = value as object[];
+        if (array == null) return false;
+        result = new double[array.Length];
+        for (int i = 0; i < array.Length; i++)
+        {
+            try { result[i] = Convert.ToDouble(array[i], System.Globalization.CultureInfo.InvariantCulture); }
+            catch { result = null; return false; }
+        }
+        return true;
     }
 
     private struct SubstringMatch
