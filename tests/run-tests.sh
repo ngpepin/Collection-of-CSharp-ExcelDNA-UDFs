@@ -9,7 +9,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 command -v mcs >/dev/null || { echo "mcs is required (Mono C# compiler)." >&2; exit 1; }
 command -v mono >/dev/null || { echo "mono is required." >&2; exit 1; }
 
-mcs -warn:4 -r:System.Web.Extensions \
+mcs -warn:4 \
   -out:"$TMP_DIR/AimlUdfTests.exe" \
   "$ROOT_DIR/tests/ExcelDnaStubs.cs" \
   "$SOURCE_FILE" \

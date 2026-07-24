@@ -299,7 +299,6 @@ using System.Linq;
 using System.IO;
 using System.Net;
 using System.Text;
-using System.Web.Script.Serialization;
 using ExcelDna.Integration;
 using Excel = Microsoft.Office.Interop.Excel;
 
@@ -1921,7 +1920,7 @@ public class C
         if (!TryGetRequiredText(jsonObj, out json) || !TryGetRequiredText(pathObj, out path)) return ExcelError.ExcelErrorValue;
         try
         {
-            object root = new JavaScriptSerializer().DeserializeObject(json);
+            object root = JsonDeserialize(json);
             object value;
             if (!TryNavigateJson(root, path, out value)) return ExcelError.ExcelErrorNA;
             return ConvertJsonValueForExcel(value);
@@ -2076,13 +2075,13 @@ public class C
         if (!string.IsNullOrEmpty(apiKey)) request.Headers[HttpRequestHeader.Authorization] = "Bearer " + apiKey;
         if (body != null)
         {
-            byte[] bytes = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(body));
+            byte[] bytes = Encoding.UTF8.GetBytes(JsonSerialize(body));
             request.ContentLength = bytes.Length;
             using (Stream stream = request.GetRequestStream()) stream.Write(bytes, 0, bytes.Length);
         }
         using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
         using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
-            return new JavaScriptSerializer().DeserializeObject(reader.ReadToEnd());
+            return JsonDeserialize(reader.ReadToEnd());
     }
 
     private static string ReadWebException(WebException ex)
@@ -2204,6 +2203,253 @@ public class C
         catch { return false; }
     }
 
+    private static object JsonDeserialize(string json)
+    {
+        return new SimpleJsonParser(json).Parse();
+    }
+
+    private static string JsonSerialize(object value)
+    {
+        StringBuilder builder = new StringBuilder();
+        AppendJsonValue(builder, value);
+        return builder.ToString();
+    }
+
+    private static void AppendJsonValue(StringBuilder builder, object value)
+    {
+        if (value == null) { builder.Append("null"); return; }
+
+        string text = value as string;
+        if (text != null) { AppendJsonString(builder, text); return; }
+        if (value is bool) { builder.Append((bool)value ? "true" : "false"); return; }
+
+        Dictionary<string, object> dictionary = value as Dictionary<string, object>;
+        if (dictionary != null)
+        {
+            builder.Append('{');
+            bool first = true;
+            foreach (KeyValuePair<string, object> pair in dictionary)
+            {
+                if (!first) builder.Append(',');
+                first = false;
+                AppendJsonString(builder, pair.Key);
+                builder.Append(':');
+                AppendJsonValue(builder, pair.Value);
+            }
+            builder.Append('}');
+            return;
+        }
+
+        System.Collections.IEnumerable enumerable = value as System.Collections.IEnumerable;
+        if (enumerable != null)
+        {
+            builder.Append('[');
+            bool first = true;
+            foreach (object item in enumerable)
+            {
+                if (!first) builder.Append(',');
+                first = false;
+                AppendJsonValue(builder, item);
+            }
+            builder.Append(']');
+            return;
+        }
+
+        if (value is byte || value is sbyte || value is short || value is ushort ||
+            value is int || value is uint || value is long || value is ulong ||
+            value is float || value is double || value is decimal)
+        {
+            builder.Append(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture));
+            return;
+        }
+
+        AppendJsonString(builder, value.ToString());
+    }
+
+    private static void AppendJsonString(StringBuilder builder, string value)
+    {
+        builder.Append('"');
+        for (int i = 0; i < value.Length; i++)
+        {
+            char ch = value[i];
+            switch (ch)
+            {
+                case '"': builder.Append("\\\""); break;
+                case '\\': builder.Append("\\\\"); break;
+                case '\b': builder.Append("\\b"); break;
+                case '\f': builder.Append("\\f"); break;
+                case '\n': builder.Append("\\n"); break;
+                case '\r': builder.Append("\\r"); break;
+                case '\t': builder.Append("\\t"); break;
+                default:
+                    if (ch < 32) builder.Append("\\u" + ((int)ch).ToString("x4"));
+                    else builder.Append(ch);
+                    break;
+            }
+        }
+        builder.Append('"');
+    }
+
+    private sealed class SimpleJsonParser
+    {
+        private readonly string text;
+        private int position;
+
+        public SimpleJsonParser(string text)
+        {
+            if (text == null) throw new ArgumentNullException("text");
+            this.text = text;
+        }
+
+        public object Parse()
+        {
+            SkipWhitespace();
+            object value = ParseValue();
+            SkipWhitespace();
+            if (position != text.Length) throw new FormatException("Unexpected trailing JSON content.");
+            return value;
+        }
+
+        private object ParseValue()
+        {
+            SkipWhitespace();
+            if (position >= text.Length) throw new FormatException("Unexpected end of JSON.");
+            char ch = text[position];
+            if (ch == '{') return ParseObject();
+            if (ch == '[') return ParseArray();
+            if (ch == '"') return ParseString();
+            if (ch == 't') { ReadLiteral("true"); return true; }
+            if (ch == 'f') { ReadLiteral("false"); return false; }
+            if (ch == 'n') { ReadLiteral("null"); return null; }
+            return ParseNumber();
+        }
+
+        private Dictionary<string, object> ParseObject()
+        {
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            position++;
+            SkipWhitespace();
+            if (Take('}')) return result;
+            while (true)
+            {
+                SkipWhitespace();
+                if (position >= text.Length || text[position] != '"') throw new FormatException("Expected JSON property name.");
+                string key = ParseString();
+                SkipWhitespace();
+                Require(':');
+                result[key] = ParseValue();
+                SkipWhitespace();
+                if (Take('}')) return result;
+                Require(',');
+            }
+        }
+
+        private object[] ParseArray()
+        {
+            List<object> result = new List<object>();
+            position++;
+            SkipWhitespace();
+            if (Take(']')) return result.ToArray();
+            while (true)
+            {
+                result.Add(ParseValue());
+                SkipWhitespace();
+                if (Take(']')) return result.ToArray();
+                Require(',');
+            }
+        }
+
+        private string ParseString()
+        {
+            Require('"');
+            StringBuilder builder = new StringBuilder();
+            while (position < text.Length)
+            {
+                char ch = text[position++];
+                if (ch == '"') return builder.ToString();
+                if (ch != '\\') { builder.Append(ch); continue; }
+                if (position >= text.Length) throw new FormatException("Incomplete JSON escape sequence.");
+                char escaped = text[position++];
+                switch (escaped)
+                {
+                    case '"': builder.Append('"'); break;
+                    case '\\': builder.Append('\\'); break;
+                    case '/': builder.Append('/'); break;
+                    case 'b': builder.Append('\b'); break;
+                    case 'f': builder.Append('\f'); break;
+                    case 'n': builder.Append('\n'); break;
+                    case 'r': builder.Append('\r'); break;
+                    case 't': builder.Append('\t'); break;
+                    case 'u':
+                        if (position + 4 > text.Length) throw new FormatException("Incomplete JSON unicode escape.");
+                        int code;
+                        if (!int.TryParse(text.Substring(position, 4), System.Globalization.NumberStyles.HexNumber,
+                            System.Globalization.CultureInfo.InvariantCulture, out code))
+                            throw new FormatException("Invalid JSON unicode escape.");
+                        builder.Append((char)code);
+                        position += 4;
+                        break;
+                    default: throw new FormatException("Invalid JSON escape sequence.");
+                }
+            }
+            throw new FormatException("Unterminated JSON string.");
+        }
+
+        private object ParseNumber()
+        {
+            int start = position;
+            if (position < text.Length && text[position] == '-') position++;
+            while (position < text.Length && char.IsDigit(text[position])) position++;
+            bool floatingPoint = false;
+            if (position < text.Length && text[position] == '.')
+            {
+                floatingPoint = true;
+                position++;
+                while (position < text.Length && char.IsDigit(text[position])) position++;
+            }
+            if (position < text.Length && (text[position] == 'e' || text[position] == 'E'))
+            {
+                floatingPoint = true;
+                position++;
+                if (position < text.Length && (text[position] == '+' || text[position] == '-')) position++;
+                while (position < text.Length && char.IsDigit(text[position])) position++;
+            }
+            if (start == position) throw new FormatException("Invalid JSON value.");
+            string token = text.Substring(start, position - start);
+            long integer;
+            if (!floatingPoint && long.TryParse(token, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out integer)) return integer;
+            double number;
+            if (double.TryParse(token, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out number)) return number;
+            throw new FormatException("Invalid JSON number.");
+        }
+
+        private void ReadLiteral(string literal)
+        {
+            if (position + literal.Length > text.Length ||
+                string.Compare(text, position, literal, 0, literal.Length, StringComparison.Ordinal) != 0)
+                throw new FormatException("Invalid JSON literal.");
+            position += literal.Length;
+        }
+
+        private bool Take(char expected)
+        {
+            if (position < text.Length && text[position] == expected) { position++; return true; }
+            return false;
+        }
+
+        private void Require(char expected)
+        {
+            if (!Take(expected)) throw new FormatException("Expected '" + expected + "' in JSON.");
+        }
+
+        private void SkipWhitespace()
+        {
+            while (position < text.Length && char.IsWhiteSpace(text[position])) position++;
+        }
+    }
+
     private static bool TryNavigateJson(object root, string path, out object value)
     {
         value = root;
@@ -2244,10 +2490,10 @@ public class C
             object[,] result = new object[array.Length, 1];
             for (int i = 0; i < array.Length; i++)
                 result[i, 0] = array[i] is Dictionary<string, object> || array[i] is object[]
-                    ? new JavaScriptSerializer().Serialize(array[i]) : array[i];
+                    ? JsonSerialize(array[i]) : array[i];
             return result;
         }
-        return new JavaScriptSerializer().Serialize(value);
+        return JsonSerialize(value);
     }
 
     private static bool TryConvertJsonNumberArray(object value, out double[] result)

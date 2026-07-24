@@ -64,7 +64,7 @@ PY
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
-mcs -target:library -optimize+ -warn:4 -r:System.Web.Extensions \
+mcs -target:library -optimize+ -warn:4 \
   -out:"$BUILD_DIR/$ADDIN_NAME.dll" \
   -r:"$PACKAGE_DIR/ExcelDna.Integration.dll" \
   -r:"$PACKAGE_DIR/Microsoft.Office.Interop.Excel.dll" \
